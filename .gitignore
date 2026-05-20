@@ -1,0 +1,28 @@
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/
+.dev.vars
+dist/
+build/
+
+# Secrets & env
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Office temp files (Word/Excel khi mở đang khóa)
+~$*
+.~lock.*

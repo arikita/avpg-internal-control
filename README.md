@@ -1,12 +1,14 @@
-# AVPG — Hệ thống Kiểm soát Nội bộ (KSNB)
+# AVPG · Phiếu Đề Xuất
 
-Webapp tự động hóa quy trình làm việc của phòng Kiểm soát Nội bộ, tích hợp Telegram.
+Hệ thống quy trình đề xuất & phê duyệt nội bộ của tập đoàn AVPG. Toàn bộ nhân viên sử dụng, tích hợp M365 + Telegram.
+
+> Phase 1 mới làm phiếu đề xuất chung. Các module riêng cho KSNB (mua hàng, báo cáo nội bộ) sẽ ship ở phase sau.
 
 ## Phase 1 — Phiếu đề xuất
 
-Quy trình: **Người đề xuất → Quản lý duyệt → BOD duyệt → KSNB hoàn thiện hồ sơ**
+Quy trình: **Người đề xuất → Trưởng phòng duyệt → BOD duyệt → KSNB hoàn thiện hồ sơ**
 
-Người dùng có thể tạo phiếu qua web hoặc Telegram nhóm; thông báo qua email (M365) + Telegram inline button.
+Người dùng tạo phiếu qua web; Telegram dùng để notify + duyệt nhanh (inline button). Thông báo qua email M365 + Telegram DM.
 
 ## Stack
 

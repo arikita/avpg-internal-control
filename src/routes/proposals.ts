@@ -8,7 +8,7 @@ import { requireAuth } from '../middleware/auth';
 import { badRequest, forbidden, notFound, unprocessable } from '../lib/errors';
 import { nextProposalCode } from '../lib/codes';
 import { getActiveBod, getDeptManager } from '../lib/routing';
-import { enqueueNotification } from '../lib/notifications';
+import { enqueueNotification, type NotificationEvent } from '../lib/notifications';
 import { nowIso } from '../lib/time';
 
 export const proposalRoutes = new Hono<AppEnv>();
@@ -73,6 +73,18 @@ async function replaceItems(env: AppEnv['Bindings'], proposalId: number, items: 
 
 function assertOwner(row: ProposalRow, userId: string) {
   if (row.proposer_user_id !== userId) throw forbidden('Bạn không phải người tạo phiếu này');
+}
+
+// Enqueue email + telegram DM cho cùng 1 recipient email.
+// Telegram dispatcher tự skip nếu user chưa link.
+async function notifyApprover(
+  env: AppEnv['Bindings'],
+  proposalId: number,
+  event: NotificationEvent,
+  email: string,
+): Promise<void> {
+  await enqueueNotification(env, { proposalId, channel: 'email', event, recipient: email });
+  await enqueueNotification(env, { proposalId, channel: 'telegram', event, recipient: email });
 }
 
 // ---- POST /api/proposals → create draft ----
@@ -257,12 +269,7 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
          VALUES (?1, 'manager', ?2, ?3, 'approve', 'Tự duyệt do là Trưởng phòng', 'web')`,
       ).bind(id, manager.email, manager.name),
     ]);
-    await enqueueNotification(c.env, {
-      proposalId: id,
-      channel: 'email',
-      event: 'manager_approved',
-      recipient: bod.email,
-    });
+    await notifyApprover(c.env, id, 'manager_approved', bod.email);
   } else {
     await c.env.DB.prepare(
       `UPDATE proposals
@@ -274,12 +281,7 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
     )
       .bind(id, code, manager.email, manager.name, bod.email, bod.name, submittedAt)
       .run();
-    await enqueueNotification(c.env, {
-      proposalId: id,
-      channel: 'email',
-      event: 'submitted',
-      recipient: manager.email,
-    });
+    await notifyApprover(c.env, id, 'submitted', manager.email);
   }
 
   return c.json({ proposal: await loadProposal(c, id) });
@@ -318,25 +320,12 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
 
   if (body.action === 'approve' && row.bod_email) {
     // TODO Edge 6.2: nếu proposer == BOD email → auto-approve bước BOD luôn.
-    await enqueueNotification(c.env, {
-      proposalId: id,
-      channel: 'email',
-      event: 'manager_approved',
-      recipient: row.bod_email,
-    });
+    await notifyApprover(c.env, id, 'manager_approved', row.bod_email);
   } else if (body.action === 'reject') {
-    // Notify proposer
     const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
       .bind(row.proposer_user_id)
       .first<{ email: string }>();
-    if (proposer) {
-      await enqueueNotification(c.env, {
-        proposalId: id,
-        channel: 'email',
-        event: 'rejected',
-        recipient: proposer.email,
-      });
-    }
+    if (proposer) await notifyApprover(c.env, id, 'rejected', proposer.email);
   }
 
   return c.json({ proposal: await loadProposal(c, id) });
@@ -375,7 +364,6 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
   ]);
 
   if (body.action === 'approve') {
-    // Notify KSNB group (telegram) + KSNB emails (TODO env)
     if (c.env.KSNB_TELEGRAM_CHAT_ID) {
       await enqueueNotification(c.env, {
         proposalId: id,
@@ -388,14 +376,7 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
     const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
       .bind(row.proposer_user_id)
       .first<{ email: string }>();
-    if (proposer) {
-      await enqueueNotification(c.env, {
-        proposalId: id,
-        channel: 'email',
-        event: 'rejected',
-        recipient: proposer.email,
-      });
-    }
+    if (proposer) await notifyApprover(c.env, id, 'rejected', proposer.email);
     if (row.manager_email) {
       await enqueueNotification(c.env, {
         proposalId: id,
@@ -432,14 +413,7 @@ proposalRoutes.post('/:id{[0-9]+}/ksnb-complete', async (c) => {
   const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
     .bind(row.proposer_user_id)
     .first<{ email: string }>();
-  if (proposer) {
-    await enqueueNotification(c.env, {
-      proposalId: id,
-      channel: 'email',
-      event: 'completed',
-      recipient: proposer.email,
-    });
-  }
+  if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
 
   return c.json({ proposal: await loadProposal(c, id) });
 });

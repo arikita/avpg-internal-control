@@ -36,9 +36,36 @@ export function appPage(user: SessionUser) {
     <div x-data="dashboard()" x-init="load()" class="space-y-4">
       <div class="flex justify-between items-center">
         <h1 class="text-xl font-semibold">Hộp phiếu</h1>
-        <a href="/p/new" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">
-          + Tạo phiếu mới
-        </a>
+        <div class="flex items-center gap-2">
+          <button @click="openTelegram()" class="text-sm text-slate-600 hover:text-slate-900 px-3 py-2">
+            <span x-show="!telegramLinked">📱 Liên kết Telegram</span>
+            <span x-show="telegramLinked" class="text-emerald-700">📱 Đã link Telegram</span>
+          </button>
+          <a href="/p/new" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">
+            + Tạo phiếu mới
+          </a>
+        </div>
+      </div>
+
+      <div x-show="tgModal" x-cloak @click.self="tgModal=false"
+        class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4 space-y-4">
+          <h2 class="text-lg font-semibold">Liên kết Telegram</h2>
+          <ol class="text-sm text-slate-600 space-y-2 list-decimal pl-5">
+            <li>Mở bot Telegram của AVPG (anh KSNB cung cấp username bot).</li>
+            <li>Gửi lệnh: <code class="bg-slate-100 px-2 py-0.5 rounded">/start</code> nếu lần đầu.</li>
+            <li>Copy token bên dưới rồi gửi: <code class="bg-slate-100 px-2 py-0.5 rounded">/link &lt;token&gt;</code></li>
+          </ol>
+          <div x-show="tgToken" class="bg-slate-50 border border-slate-200 rounded p-3 font-mono text-center text-lg" x-text="tgToken"></div>
+          <div x-show="tgToken" class="text-xs text-slate-500 text-center">Token có hiệu lực 10 phút.</div>
+          <div class="flex justify-end gap-2 pt-2 border-t border-slate-200">
+            <button @click="tgModal=false" class="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-900">Đóng</button>
+            <button @click="genToken()" :disabled="tgBusy"
+              class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50">
+              <span x-text="tgToken ? 'Tạo token mới' : 'Tạo token'"></span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="border-b border-slate-200">
@@ -96,6 +123,10 @@ export function appPage(user: SessionUser) {
           tab: 'mine',
           loading: false,
           proposals: [],
+          telegramLinked: false,
+          tgModal: false,
+          tgToken: '',
+          tgBusy: false,
           tabs: [
             { key: 'mine',           label: 'Phiếu của tôi' },
             { key: 'manager_inbox',  label: 'Tôi cần duyệt (TP)' },
@@ -105,9 +136,12 @@ export function appPage(user: SessionUser) {
           async load() {
             this.loading = true;
             try {
-              const r = await fetch('/api/proposals?scope=' + this.tab);
-              const j = await r.json();
-              this.proposals = j.proposals || [];
+              const [pr, tg] = await Promise.all([
+                fetch('/api/proposals?scope=' + this.tab).then(r => r.json()),
+                fetch('/api/me/telegram-status').then(r => r.json()),
+              ]);
+              this.proposals = pr.proposals || [];
+              this.telegramLinked = !!tg.linked;
             } catch (e) {
               alert('Lỗi tải dữ liệu: ' + e.message);
             } finally {
@@ -115,6 +149,19 @@ export function appPage(user: SessionUser) {
             }
           },
           setTab(k) { this.tab = k; this.load(); },
+          openTelegram() { this.tgModal = true; this.tgToken = ''; },
+          async genToken() {
+            this.tgBusy = true;
+            try {
+              const r = await fetch('/api/me/link-token', { method: 'POST' });
+              const j = await r.json();
+              this.tgToken = j.token;
+            } catch (e) {
+              alert('Lỗi: ' + e.message);
+            } finally {
+              this.tgBusy = false;
+            }
+          },
           goto(id) { window.location.href = '/p/' + id; },
           fmt(iso) {
             if (!iso) return '';

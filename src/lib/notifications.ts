@@ -5,6 +5,8 @@
 import type { Bindings } from '../types';
 import { renderEmail } from './email-templates';
 import { graphSendMail } from './graph';
+import { renderTelegram } from './telegram-templates';
+import { sendMessage } from './telegram';
 
 export type NotificationEvent =
   | 'submitted'
@@ -83,16 +85,64 @@ export async function runNotificationQueue(env: Bindings): Promise<QueueResult> 
           failed++;
         }
       } else {
-        // Telegram dispatch — Phase 1 chưa wire, đẩy attempts để khỏi spam log.
-        await env.DB.prepare(
-          `UPDATE notifications
-              SET attempts = attempts + 1,
-                  error = 'Telegram dispatch not implemented yet'
-            WHERE id = ?1`,
-        )
-          .bind(n.id)
-          .run();
-        skipped++;
+        // recipient: nếu là email → DM (lookup user.telegram_chat_id);
+        // nếu là số (chat_id) → gửi thẳng vào group/DM chat đó.
+        const isEmail = n.recipient.includes('@');
+        let chatId: string | null = null;
+        let withButtons = false;
+
+        if (isEmail) {
+          const u = await env.DB.prepare(
+            `SELECT telegram_chat_id FROM users WHERE email = ?1 LIMIT 1`,
+          )
+            .bind(n.recipient.toLowerCase())
+            .first<{ telegram_chat_id: string | null }>();
+          if (u?.telegram_chat_id) {
+            chatId = u.telegram_chat_id;
+            // Chỉ enable approve/reject button cho event đang chờ recipient duyệt.
+            withButtons = n.event === 'submitted' || n.event === 'manager_approved';
+          }
+        } else {
+          chatId = n.recipient;
+          // Vào group (KSNB) — không enable button (workflow 5.4).
+          withButtons = false;
+        }
+
+        if (!chatId) {
+          // User chưa link Telegram → bỏ qua, đánh dấu sent để khỏi retry.
+          await env.DB.prepare(
+            `UPDATE notifications
+                SET status = 'sent', attempts = attempts + 1,
+                    error = 'Recipient chưa link Telegram', sent_at = datetime('now')
+              WHERE id = ?1`,
+          )
+            .bind(n.id)
+            .run();
+          skipped++;
+        } else {
+          const tg = await renderTelegram(env, n.event, n.proposal_id, {
+            withActionButtons: withButtons,
+          });
+          const r = await sendMessage(env, {
+            chatId,
+            text: tg.text,
+            replyMarkup: tg.replyMarkup,
+          });
+          if (r.ok) {
+            await env.DB.prepare(
+              `UPDATE notifications
+                  SET status = 'sent', provider_msg_id = ?2, sent_at = datetime('now'),
+                      attempts = attempts + 1, error = NULL
+                WHERE id = ?1`,
+            )
+              .bind(n.id, String(r.result.message_id))
+              .run();
+            sent++;
+          } else {
+            await markFailure(env, n, `Telegram: ${r.description}`);
+            failed++;
+          }
+        }
       }
     } catch (e) {
       await markFailure(env, n, e instanceof Error ? e.message : String(e));

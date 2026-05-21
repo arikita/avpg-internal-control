@@ -71,28 +71,24 @@ Phase 1 anh deploy thẳng prod thì có thể skip phần này.
 1. Sidebar trái: **API permissions**
 2. Section đã có sẵn `User.Read` (delegated) từ Microsoft Graph → giữ nguyên
 
-### 4a. Thêm permission để đọc info Manager/đồng nghiệp
+### 4a. Thêm permission để gửi email (Application)
 
 3. Click **+ Add a permission** → chọn **Microsoft Graph**
-4. Chọn **Delegated permissions**
-5. Search và tick các quyền sau:
-   - `User.ReadBasic.All` *(đọc danh bạ basic — name, email, dept của user khác)*
-   - `email`
-   - `profile`
-   - `offline_access` *(để có refresh token)*
+4. Chọn **Application permissions** (không phải Delegated)
+5. Search và tick:
+   - `Mail.Send` *(cho Worker gửi email không cần user context)*
 6. Click **Add permissions**
 
-### 4b. Thêm permission để gửi email
+### 4b. (Tuỳ chọn) Thêm scopes Delegated khác
 
-7. Click **+ Add a permission** → chọn **Microsoft Graph**
-8. Chọn **Application permissions** (không phải Delegated)
-9. Search và tick:
-   - `Mail.Send` *(cho Worker gửi email không cần user context)*
-10. Click **Add permissions**
+Phase 1 KHÔNG cần thêm `User.ReadBasic.All`, `email`, `profile`, `offline_access` —
+code chỉ dùng `openid + profile + email + User.Read` (đã pre-included khi
+register app). Nếu Phase 2 cần lookup user khác qua Graph từ phía user context
+thì mới add `User.ReadBasic.All`.
 
 ### 4c. Grant admin consent
 
-11. Trên trang API permissions, click nút **✓ Grant admin consent for [tenant_name]**
+7. Trên trang API permissions, click nút **✓ Grant admin consent for [tenant_name]**
 12. Confirm. Toàn bộ row sẽ chuyển sang trạng thái ✅ Granted (xanh).
 
 ⚠️ Nếu nút Grant bị disable, anh không có quyền Global Admin → nhờ admin của tenant grant giúp.
@@ -181,7 +177,7 @@ CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 Và confirm:
 - ✅ Shared mailbox `no-reply@anvietenergy.com` đã tạo
 - ✅ Application Access Policy đã apply (restrict)
-- ✅ Admin consent đã grant cho cả 4 permission (User.Read, User.ReadBasic.All, offline_access, Mail.Send)
+- ✅ Admin consent đã grant cho 2 permission (User.Read delegated, Mail.Send application)
 
 ---
 

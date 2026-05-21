@@ -4,7 +4,12 @@
 import type { Bindings } from '../types';
 import { badRequest } from './errors';
 
-const SCOPES = ['openid', 'profile', 'email', 'offline_access', 'User.Read', 'User.ReadBasic.All'];
+// Minimal scopes Phase 1:
+//   - openid, profile, email: standard OIDC để có id_token với email/name claims
+//   - User.Read: gọi Graph /me lấy department + jobTitle
+// User.ReadBasic.All và offline_access KHÔNG cần (manager lookup qua D1,
+// access token chỉ dùng 1 lần lúc callback → không cần refresh).
+const SCOPES = ['openid', 'profile', 'email', 'User.Read'];
 
 export function authorizeUrl(env: Bindings, state: string, nonce: string): string {
   const params = new URLSearchParams({

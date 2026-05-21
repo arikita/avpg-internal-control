@@ -79,8 +79,9 @@ export async function renderTelegram(
       return { text, replyMarkup: { inline_keyboard: kb } };
     }
     case 'bod_approved': {
+      // Phase 1: dùng cho group KSNB informational notify khi phiếu hoàn thành
       const text =
-        `✅ <b>Phiếu đã duyệt xong — chờ KSNB hoàn thiện</b>\n\n` +
+        `✅ <b>Phiếu đề xuất đã duyệt xong</b>\n\n` +
         `📋 <code>${tgEsc(p.code)}</code>\n` +
         `👤 ${tgEsc(p.proposer_name)} — ${tgEsc(p.proposer_dept)}\n` +
         `📝 ${tgEsc(p.title)}\n` +

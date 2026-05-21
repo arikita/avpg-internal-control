@@ -1,6 +1,10 @@
 # Phase 1 — Workflow Phiếu Đề Xuất
 
 > Spec chi tiết quy trình duyệt phiếu đề xuất, kèm trigger notification email/Telegram, template tin nhắn, và edge cases.
+>
+> **Update 2026-05-21**: KSNB không còn vai trò workflow. BOD approve = final
+> (status='completed' luôn). State machine còn 5 states. KSNB chỉ nhận telegram
+> group informational notify.
 
 ---
 

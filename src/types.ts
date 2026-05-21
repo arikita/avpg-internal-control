@@ -10,6 +10,9 @@ export type Bindings = {
   ENTRA_REDIRECT_PATH: string;
   NO_REPLY_MAILBOX: string;
   VN_TZ_OFFSET_MINUTES: string;
+  // CSV email — chỉ những user trong list mới gọi được /admin/* + /api/proposals?scope=ksnb_inbox
+  // + ksnb-complete. Để trống = chặn tất cả.
+  ADMIN_EMAILS: string;
 
   // Secrets
   TENANT_ID: string;

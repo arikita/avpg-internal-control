@@ -30,8 +30,6 @@ export function landingPage(user: SessionUser | null) {
 
 // ---------- App dashboard ----------
 export function appPage(user: SessionUser) {
-  const isManager = true; // UI luôn render; backend filter bằng email
-  void isManager;
   const body = html`
     <div x-data="dashboard()" x-init="load()" class="space-y-4">
       <div class="flex justify-between items-center">
@@ -131,7 +129,6 @@ export function appPage(user: SessionUser) {
             { key: 'mine',           label: 'Phiếu của tôi' },
             { key: 'manager_inbox',  label: 'Tôi cần duyệt (TP)' },
             { key: 'bod_inbox',      label: 'Tôi cần duyệt (BGĐ)' },
-            { key: 'ksnb_inbox',     label: 'Chờ KSNB hoàn thiện' },
           ],
           async load() {
             this.loading = true;
@@ -175,8 +172,7 @@ export function appPage(user: SessionUser) {
               draft:            ['Nháp',          'bg-slate-100 text-slate-700'],
               submitted:        ['Chờ TP duyệt',  'bg-amber-100 text-amber-800'],
               manager_approved: ['Chờ BGĐ duyệt', 'bg-blue-100 text-blue-800'],
-              bod_approved:     ['Chờ KSNB',      'bg-indigo-100 text-indigo-800'],
-              completed:        ['Hoàn thành',    'bg-emerald-100 text-emerald-800'],
+              completed:        ['Đã duyệt',      'bg-emerald-100 text-emerald-800'],
               rejected:         ['Từ chối',       'bg-rose-100 text-rose-800'],
             };
             const m = map[status] || [status, 'bg-slate-100 text-slate-700'];
@@ -387,7 +383,6 @@ export function proposalDetailPage(
   const canSubmit = isOwner && status === 'draft';
   const canManagerAct = isManagerOf && status === 'submitted';
   const canBodAct = isBodOf && status === 'manager_approved';
-  const canKsnbComplete = status === 'bod_approved'; // Phase 1: tạm cho mọi user đã login
 
   const itemsHtml = items.length
     ? html`
@@ -485,13 +480,6 @@ export function proposalDetailPage(
             </div>
           </div>
         </div>`;
-    }
-    if (canKsnbComplete) {
-      return html`
-        <button @click="action('ksnb-complete')" :disabled="busy"
-          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-sm font-medium disabled:opacity-50">
-          Hoàn thiện hồ sơ
-        </button>`;
     }
     return html`<p class="text-sm text-slate-400">Không có hành động khả dụng cho bạn.</p>`;
   })();

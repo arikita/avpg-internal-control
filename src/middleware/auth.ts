@@ -40,3 +40,20 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   if (!user) throw unauthorized();
   await next();
 };
+
+// Áp cho route admin (KSNB only). Đọc CSV ADMIN_EMAILS, lowercased.
+export function isAdmin(env: AppEnv['Bindings'], email: string): boolean {
+  const raw = env.ADMIN_EMAILS ?? '';
+  const list = raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+  return list.includes(email.toLowerCase());
+}
+
+export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const user = c.get('user');
+  if (!user) throw unauthorized();
+  if (!isAdmin(c.env, user.email)) {
+    const { forbidden } = await import('../lib/errors');
+    throw forbidden('Endpoint admin — chỉ KSNB sử dụng');
+  }
+  await next();
+};

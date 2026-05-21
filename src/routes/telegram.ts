@@ -278,17 +278,28 @@ async function doApprove(
   env: Bindings,
   cb: TgCallback,
   u: { id: string; email: string; display_name: string },
-  p: { id: number; code: string; status: string; bod_email: string; manager_email: string },
+  p: {
+    id: number;
+    code: string;
+    status: string;
+    bod_email: string;
+    manager_email: string;
+    proposer_user_id: string;
+  },
   role: 'manager' | 'bod',
 ): Promise<void> {
   const now = nowIso();
-  const newStatus = role === 'manager' ? 'manager_approved' : 'bod_approved';
-  const ackField = role === 'manager' ? 'manager_acted_at' : 'bod_acted_at';
+  // BOD approve = final → status='completed', set bod_acted_at + completed_at.
+  const newStatus = role === 'manager' ? 'manager_approved' : 'completed';
+
+  const updateSql =
+    role === 'manager'
+      ? `UPDATE proposals SET status = 'manager_approved', manager_acted_at = ?2, updated_at = ?2 WHERE id = ?1`
+      : `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`;
+  void newStatus;
 
   await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE proposals SET status = ?2, ${ackField} = ?3, updated_at = ?3 WHERE id = ?1`,
-    ).bind(p.id, newStatus, now),
+    env.DB.prepare(updateSql).bind(p.id, now),
     env.DB.prepare(
       `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, source)
        VALUES (?1, ?2, ?3, ?4, 'approve', 'telegram')`,
@@ -297,20 +308,62 @@ async function doApprove(
 
   // Enqueue notify bước kế tiếp
   if (role === 'manager') {
-    await env.DB.prepare(
-      `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-       VALUES (?1, 'email', 'manager_approved', ?2, 'pending')`,
-    )
-      .bind(p.id, p.bod_email)
-      .run();
-    await env.DB.prepare(
-      `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-       VALUES (?1, 'telegram', 'manager_approved', ?2, 'pending')`,
-    )
-      .bind(p.id, p.bod_email)
-      .run();
+    // Edge 6.2: proposer là BOD → auto-approve bước BOD → status='completed'
+    const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+      .bind(p.proposer_user_id)
+      .first<{ email: string }>();
+    const proposerIsBod =
+      proposer?.email && proposer.email.toLowerCase() === p.bod_email?.toLowerCase();
+
+    if (proposerIsBod) {
+      const completedAt = nowIso();
+      await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
+        ).bind(p.id, completedAt),
+        env.DB.prepare(
+          `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+           VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'telegram')`,
+        ).bind(p.id, p.bod_email, p.bod_email),
+      ]);
+      await env.DB.prepare(
+        `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
+         VALUES (?1, 'email', 'completed', ?2, 'pending'),
+                (?1, 'telegram', 'completed', ?2, 'pending')`,
+      )
+        .bind(p.id, proposer.email)
+        .run();
+      if (env.KSNB_TELEGRAM_CHAT_ID) {
+        await env.DB.prepare(
+          `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
+           VALUES (?1, 'telegram', 'bod_approved', ?2, 'pending')`,
+        )
+          .bind(p.id, env.KSNB_TELEGRAM_CHAT_ID)
+          .run();
+      }
+    } else {
+      await env.DB.prepare(
+        `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
+         VALUES (?1, 'email', 'manager_approved', ?2, 'pending'),
+                (?1, 'telegram', 'manager_approved', ?2, 'pending')`,
+      )
+        .bind(p.id, p.bod_email)
+        .run();
+    }
   } else {
-    // BOD approve → notify KSNB group
+    // BOD approve → completed: notify proposer + KSNB group informational
+    const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+      .bind(p.proposer_user_id)
+      .first<{ email: string }>();
+    if (proposer) {
+      await env.DB.prepare(
+        `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
+         VALUES (?1, 'email', 'completed', ?2, 'pending'),
+                (?1, 'telegram', 'completed', ?2, 'pending')`,
+      )
+        .bind(p.id, proposer.email)
+        .run();
+    }
     if (env.KSNB_TELEGRAM_CHAT_ID) {
       await env.DB.prepare(
         `INSERT INTO notifications (proposal_id, channel, event, recipient, status)

@@ -138,7 +138,7 @@ proposalRoutes.post('/', async (c) => {
 // ---- GET /api/proposals → list (mine + inbox) ----
 proposalRoutes.get('/', async (c) => {
   const user = c.get('user');
-  const scope = c.req.query('scope') ?? 'mine'; // mine | manager_inbox | bod_inbox | ksnb_inbox
+  const scope = c.req.query('scope') ?? 'mine'; // mine | manager_inbox | bod_inbox
   let sql = '';
   let bind: unknown[] = [];
   switch (scope) {
@@ -153,9 +153,6 @@ proposalRoutes.get('/', async (c) => {
     case 'bod_inbox':
       sql = `SELECT * FROM proposals WHERE bod_email = ?1 AND status = 'manager_approved' ORDER BY manager_acted_at ASC`;
       bind = [user.email];
-      break;
-    case 'ksnb_inbox':
-      sql = `SELECT * FROM proposals WHERE status = 'bod_approved' ORDER BY bod_acted_at ASC`;
       break;
     default:
       throw badRequest('scope không hợp lệ');
@@ -243,45 +240,77 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   const submittedAt = nowIso();
 
   // Edge case 6.1: proposer là Manager phòng mình → auto-approve bước Manager.
+  // Edge case 6.2: proposer là BOD → auto-approve bước BOD.
+  // Cả 2 trùng (TP+BOD cùng người, là proposer): chuyển thẳng status='completed'.
   const proposerIsManager = user.email.toLowerCase() === manager.email.toLowerCase();
+  const proposerIsBod = user.email.toLowerCase() === bod.email.toLowerCase();
+
+  const stmts: D1PreparedStatement[] = [];
+  let finalStatus: 'submitted' | 'manager_approved' | 'completed' = 'submitted';
+  const setFields = [
+    `code = ?2`,
+    `status = ?3`,
+    `manager_email = ?4`,
+    `manager_name = ?5`,
+    `bod_email = ?6`,
+    `bod_name = ?7`,
+    `submitted_at = ?8`,
+    `updated_at = ?8`,
+  ];
 
   if (proposerIsManager) {
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        `UPDATE proposals
-            SET code = ?2, status = 'manager_approved',
-                manager_email = ?3, manager_name = ?4,
-                bod_email = ?5, bod_name = ?6,
-                submitted_at = ?7, manager_acted_at = ?7,
-                updated_at = ?7
-          WHERE id = ?1`,
-      ).bind(
-        id,
-        code,
-        manager.email,
-        manager.name,
-        bod.email,
-        bod.name,
-        submittedAt,
-      ),
+    finalStatus = 'manager_approved';
+    setFields.push(`manager_acted_at = ?8`);
+    stmts.push(
       c.env.DB.prepare(
         `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
          VALUES (?1, 'manager', ?2, ?3, 'approve', 'Tự duyệt do là Trưởng phòng', 'web')`,
       ).bind(id, manager.email, manager.name),
-    ]);
+    );
+  }
+  if (proposerIsBod) {
+    finalStatus = 'completed';
+    setFields.push(`bod_acted_at = ?8`, `completed_at = ?8`);
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
+      ).bind(id, bod.email, bod.name),
+    );
+  }
+
+  stmts.unshift(
+    c.env.DB.prepare(
+      `UPDATE proposals SET ${setFields.join(', ')} WHERE id = ?1`,
+    ).bind(
+      id,
+      code,
+      finalStatus,
+      manager.email,
+      manager.name,
+      bod.email,
+      bod.name,
+      submittedAt,
+    ),
+  );
+  await c.env.DB.batch(stmts);
+
+  // Notify bước kế tiếp tuỳ status cuối.
+  if (finalStatus === 'submitted') {
+    await notifyApprover(c.env, id, 'submitted', manager.email);
+  } else if (finalStatus === 'manager_approved') {
     await notifyApprover(c.env, id, 'manager_approved', bod.email);
   } else {
-    await c.env.DB.prepare(
-      `UPDATE proposals
-          SET code = ?2, status = 'submitted',
-              manager_email = ?3, manager_name = ?4,
-              bod_email = ?5, bod_name = ?6,
-              submitted_at = ?7, updated_at = ?7
-        WHERE id = ?1`,
-    )
-      .bind(id, code, manager.email, manager.name, bod.email, bod.name, submittedAt)
-      .run();
-    await notifyApprover(c.env, id, 'submitted', manager.email);
+    // completed → notify proposer + KSNB group (informational)
+    await notifyApprover(c.env, id, 'completed', user.email);
+    if (c.env.KSNB_TELEGRAM_CHAT_ID) {
+      await enqueueNotification(c.env, {
+        proposalId: id,
+        channel: 'telegram',
+        event: 'bod_approved',
+        recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
+      });
+    }
   }
 
   return c.json({ proposal: await loadProposal(c, id) });
@@ -319,8 +348,36 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
   ]);
 
   if (body.action === 'approve' && row.bod_email) {
-    // TODO Edge 6.2: nếu proposer == BOD email → auto-approve bước BOD luôn.
-    await notifyApprover(c.env, id, 'manager_approved', row.bod_email);
+    // Edge 6.2: nếu proposer chính là BOD → auto-approve bước BOD luôn (completed).
+    const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+      .bind(row.proposer_user_id)
+      .first<{ email: string }>();
+    const proposerIsBod =
+      proposer?.email && proposer.email.toLowerCase() === row.bod_email.toLowerCase();
+
+    if (proposerIsBod) {
+      const completedAt = nowIso();
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
+        ).bind(id, completedAt),
+        c.env.DB.prepare(
+          `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+           VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
+        ).bind(id, row.bod_email, row.bod_name),
+      ]);
+      if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
+      if (c.env.KSNB_TELEGRAM_CHAT_ID) {
+        await enqueueNotification(c.env, {
+          proposalId: id,
+          channel: 'telegram',
+          event: 'bod_approved',
+          recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
+        });
+      }
+    } else {
+      await notifyApprover(c.env, id, 'manager_approved', row.bod_email);
+    }
   } else if (body.action === 'reject') {
     const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
       .bind(row.proposer_user_id)
@@ -347,12 +404,14 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
   if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
 
   const now = nowIso();
-  const newStatus = body.action === 'approve' ? 'bod_approved' : 'rejected';
+  // BOD approve = final → status='completed', set bod_acted_at + completed_at.
+  const newStatus = body.action === 'approve' ? 'completed' : 'rejected';
 
   await c.env.DB.batch([
     c.env.DB.prepare(
       `UPDATE proposals
           SET status = ?2, bod_acted_at = ?3,
+              completed_at = CASE WHEN ?2 = 'completed' THEN ?3 ELSE completed_at END,
               rejected_reason = CASE WHEN ?2 = 'rejected' THEN ?4 ELSE rejected_reason END,
               updated_at = ?3
         WHERE id = ?1`,
@@ -364,6 +423,11 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
   ]);
 
   if (body.action === 'approve') {
+    // Notify proposer (completed) + KSNB group (informational)
+    const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+      .bind(row.proposer_user_id)
+      .first<{ email: string }>();
+    if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
     if (c.env.KSNB_TELEGRAM_CHAT_ID) {
       await enqueueNotification(c.env, {
         proposalId: id,
@@ -390,30 +454,5 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
   return c.json({ proposal: await loadProposal(c, id) });
 });
 
-// ---- POST /api/proposals/:id/ksnb-complete ----
-// Phase 1: bất kỳ user nào có role 'ksnb' (kiểm bằng env list, TODO chuyển sang bảng riêng).
-proposalRoutes.post('/:id{[0-9]+}/ksnb-complete', async (c) => {
-  const id = Number(c.req.param('id'));
-  const user = c.get('user');
-  const body = await c.req.json<{ comment?: string }>().catch(() => ({} as { comment?: string }));
-  const row = await loadProposal(c, id);
-  if (row.status !== 'bod_approved') throw unprocessable('Phiếu chưa được BGĐ duyệt');
-
-  const now = nowIso();
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `UPDATE proposals SET status = 'completed', completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
-    ).bind(id, now),
-    c.env.DB.prepare(
-      `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-       VALUES (?1, 'ksnb', ?2, ?3, 'approve', ?4, 'web')`,
-    ).bind(id, user.email, user.name, body.comment ?? null),
-  ]);
-
-  const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
-    .bind(row.proposer_user_id)
-    .first<{ email: string }>();
-  if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
-
-  return c.json({ proposal: await loadProposal(c, id) });
-});
+// /ksnb-complete endpoint đã xoá — KSNB không còn vai trò trong workflow.
+// Phiếu hoàn thành tự động khi BOD duyệt (xem bod-action endpoint trên).

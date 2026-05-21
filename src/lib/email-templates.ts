@@ -139,10 +139,12 @@ function renderManagerApproved(
   return { subject, html: wrap(env, 'Phiếu chờ BGĐ duyệt', inner) };
 }
 
+// Phase 1: bod_approved chỉ còn dùng cho group telegram informational notify.
+// Email template giữ để future-proof (nếu thêm KSNB email list sau).
 function renderBodApproved(env: Bindings, p: ProposalRow): RenderedEmail {
-  const subject = `[AVPG] Phiếu ${p.code} đã duyệt xong — cần hoàn thiện hồ sơ`;
+  const subject = `[AVPG] Phiếu ${p.code} đã duyệt xong`;
   const inner = `
-    <p>Phiếu đề xuất sau đã được BGĐ duyệt, đến lượt KSNB hoàn thiện hồ sơ:</p>
+    <p>Phiếu đề xuất sau đã được duyệt xong end-to-end:</p>
     ${infoTable([
       ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
       ['Đề xuất', esc(p.title)],
@@ -153,20 +155,16 @@ function renderBodApproved(env: Bindings, p: ProposalRow): RenderedEmail {
         `${esc(p.bod_name ?? '')}${p.bod_acted_at ? ` <span style="color:#9ca3af">(${esc(vnDisplay(p.bod_acted_at))})</span>` : ''}`,
       ],
     ])}
-    ${button('Mở phiếu để xử lý', proposalUrl(env, p.id))}
+    ${button('Mở phiếu', proposalUrl(env, p.id))}
   `;
-  return { subject, html: wrap(env, 'Phiếu chờ KSNB hoàn thiện', inner) };
+  return { subject, html: wrap(env, 'Phiếu đã duyệt xong', inner) };
 }
 
-function renderCompleted(
-  env: Bindings,
-  p: ProposalRow,
-  ksnbActor: ApprovalRow | undefined,
-): RenderedEmail {
-  const subject = `[AVPG] Phiếu ${p.code} của bạn đã hoàn thành`;
+function renderCompleted(env: Bindings, p: ProposalRow): RenderedEmail {
+  const subject = `[AVPG] Phiếu ${p.code} của bạn đã được duyệt`;
   const inner = `
     <p><strong>${esc(p.proposer_name)}</strong>,</p>
-    <p>Phiếu đề xuất "<strong>${esc(p.title)}</strong>" của bạn đã được duyệt và lưu hồ sơ.</p>
+    <p>Phiếu đề xuất "<strong>${esc(p.title)}</strong>" của bạn đã được duyệt xong.</p>
     ${infoTable([
       ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
       [
@@ -177,14 +175,10 @@ function renderCompleted(
         'BGĐ duyệt',
         `${esc(p.bod_name ?? '')} <span style="color:#9ca3af">(${esc(vnDisplay(p.bod_acted_at))})</span>`,
       ],
-      [
-        'KSNB lưu',
-        `${esc(ksnbActor?.actor_name ?? '')} <span style="color:#9ca3af">(${esc(vnDisplay(p.completed_at))})</span>`,
-      ],
     ])}
     ${button('Xem chi tiết phiếu', proposalUrl(env, p.id))}
   `;
-  return { subject, html: wrap(env, 'Phiếu đã hoàn thành', inner) };
+  return { subject, html: wrap(env, 'Phiếu đã được duyệt', inner) };
 }
 
 function renderRejected(
@@ -252,15 +246,8 @@ export async function renderEmail(
     }
     case 'bod_approved':
       return renderBodApproved(env, p);
-    case 'completed': {
-      const a = await env.DB.prepare(
-        `SELECT step, actor_name, action, comment, acted_at FROM approvals
-          WHERE proposal_id = ?1 AND step = 'ksnb' ORDER BY acted_at DESC LIMIT 1`,
-      )
-        .bind(proposalId)
-        .first<ApprovalRow>();
-      return renderCompleted(env, p, a ?? undefined);
-    }
+    case 'completed':
+      return renderCompleted(env, p);
     case 'rejected': {
       const a = await env.DB.prepare(
         `SELECT step, actor_name, action, comment, acted_at FROM approvals

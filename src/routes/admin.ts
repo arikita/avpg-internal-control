@@ -4,13 +4,13 @@
 
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
-import { requireAuth } from '../middleware/auth';
+import { requireAdmin } from '../middleware/auth';
 import { runNotificationQueue } from '../lib/notifications';
 import { renderEmail } from '../lib/email-templates';
 import { notFound } from '../lib/errors';
 
 export const adminRoutes = new Hono<AppEnv>();
-adminRoutes.use('*', requireAuth);
+adminRoutes.use('*', requireAdmin);
 
 // Trigger queue ngay lập tức.
 adminRoutes.post('/notify/run', async (c) => {

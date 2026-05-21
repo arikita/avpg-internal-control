@@ -49,10 +49,11 @@ migrations_dir = "migrations"
 binding = "KV"
 id = "REPLACE_AFTER_wrangler_kv_create"
 
-# Custom domain — anh add route trong Cloudflare dashboard sau khi deploy
-# [[env.production.routes]]
-# pattern = "dexuat.avpgtech.com/*"
-# zone_name = "avpgtech.com"
+# Custom domain — Cloudflare tự tạo domain binding khi deploy.
+# Yêu cầu: zone avpgtech.com đã ở Cloudflare DNS (nameserver).
+[[env.production.routes]]
+pattern = "dexuat.avpgtech.com"
+custom_domain = true
 
 # Cron — gửi lại notifications pending (mỗi 5 phút)
 [triggers]

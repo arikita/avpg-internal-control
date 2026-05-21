@@ -104,40 +104,24 @@ curl -X POST http://localhost:8787/api/proposals/1/submit
 
 ## Deploy lên Cloudflare
 
-### Lần đầu
+→ Xem **[`docs/references/deploy-cloudflare.md`](docs/references/deploy-cloudflare.md)** cho step-by-step đầy đủ (10 bước, ~30 phút).
 
-1. Login wrangler:
-   ```bash
-   npx wrangler login
-   ```
-2. Tạo D1/KV cho production (cùng tên, khác id):
-   ```bash
-   npx wrangler d1 create avpg_db --env production
-   npx wrangler kv namespace create AVPG_KV --env production
-   ```
-   → paste id vào section `[env.production.*]` trong `wrangler.toml`.
-3. Đẩy secrets:
-   ```bash
-   npx wrangler secret put TENANT_ID --env production
-   npx wrangler secret put CLIENT_ID --env production
-   npx wrangler secret put CLIENT_SECRET --env production
-   npx wrangler secret put SESSION_SECRET --env production       # openssl rand -hex 32
-   npx wrangler secret put TELEGRAM_BOT_TOKEN --env production
-   npx wrangler secret put KSNB_TELEGRAM_CHAT_ID --env production
-   npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --env production
-   ```
-4. Apply migration:
-   ```bash
-   npm run db:apply:remote
-   ```
-5. Deploy:
-   ```bash
-   npm run deploy
-   ```
-6. Add custom domain trong Cloudflare dashboard:
-   `Workers & Pages → avpg-phieu-de-xuat-prod → Settings → Domains → Add Custom Domain → dexuat.avpgtech.com`
+Quick reference:
+```bash
+npx wrangler login                                # Bước 1
+npx wrangler d1 create avpg_db --env production   # Bước 2 — paste id vào wrangler.toml
+npx wrangler kv namespace create AVPG_KV --env production
+npm run db:apply:remote                           # Bước 3
+# Bước 4: push 7 secrets (xem deploy-cloudflare.md)
+# Bước 5: insert seed thật (departments, managers, bod)
+npm run deploy                                    # Bước 6 — custom domain tự bind
+# Bước 7: setWebhook cho Telegram bot
+# Bước 8: add prod redirect URI vào Entra App
+```
 
-### Các lần sau
+Domain production: **`https://dexuat.avpgtech.com`** (custom domain bind tự động qua `wrangler.toml`).
+
+### Update sau khi deploy
 
 ```bash
 npm run deploy

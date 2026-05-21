@@ -21,7 +21,7 @@
    - **Supported account types:** chọn `Accounts in this organizational directory only (Single tenant)`
    - **Redirect URI:**
      - Platform: `Web`
-     - URL: `http://localhost:8787/auth/callback`  *(để dev local, em sẽ thêm prod sau)*
+     - URL: **`https://dexuat.avpgtech.com/auth/callback`**  ← URI production, dùng được ngay sau khi deploy
 4. Click **Register**
 
 → Sau khi tạo, anh sẽ thấy trang **Overview** với:
@@ -30,17 +30,24 @@
 
 ---
 
-## Step 2 — Thêm Redirect URI cho production
+## Step 2 — Cấu hình thêm Authentication settings
 
 1. Sidebar trái của App: **Authentication**
-2. Section **Web** → click **Add URI**
-3. Thêm: `https://dexuat.avpgtech.com/auth/callback`
-4. Section **Implicit grant and hybrid flows**:
+2. Section **Implicit grant and hybrid flows**:
    - ✅ Tick `ID tokens (used for implicit and hybrid flows)`
    - ❌ KHÔNG tick Access tokens
-5. **Allow public client flows:** giữ `No`
-6. **Supported account types:** giữ `Accounts in this organizational directory only`
-7. Click **Save** trên cùng
+3. **Allow public client flows:** giữ `No`
+4. **Supported account types:** giữ `Accounts in this organizational directory only`
+5. Click **Save** trên cùng
+
+### (Tuỳ chọn) Thêm localhost cho dev local
+
+Nếu sau này anh muốn code/test thử trên máy mình:
+- Section **Web** → click **Add URI**
+- Thêm: `http://localhost:8787/auth/callback`
+- Save
+
+Phase 1 anh deploy thẳng prod thì có thể skip phần này.
 
 ---
 

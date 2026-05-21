@@ -42,12 +42,12 @@ VN_TZ_OFFSET_MINUTES = "420"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "avpg_db"
-database_id = "REPLACE_AFTER_wrangler_d1_create"
+database_id = "61325965-5de8-478b-a12d-75571be6020b"
 migrations_dir = "migrations"
 
 [[env.production.kv_namespaces]]
 binding = "KV"
-id = "REPLACE_AFTER_wrangler_kv_create"
+id = "3ad3d22ff7ac4fa092f2b830b188f0a5"
 
 # Custom domain — Cloudflare tự tạo domain binding khi deploy.
 # Yêu cầu: zone avpgtech.com đã ở Cloudflare DNS (nameserver).

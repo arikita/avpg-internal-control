@@ -26,3 +26,5 @@ npm-debug.log*
 # Office temp files (Word/Excel khi mở đang khóa)
 ~$*
 .~lock.*
+.cf-token
+.prod-generated-secrets

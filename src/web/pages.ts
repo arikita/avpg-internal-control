@@ -189,11 +189,38 @@ export function appPage(user: SessionUser) {
   return page({ title: 'Hộp phiếu', user, body });
 }
 
-// ---------- New proposal form ----------
-export function newProposalPage(user: SessionUser) {
+// ---------- Proposal form (new + edit dùng chung) ----------
+type ExistingProposal = {
+  id: number;
+  title: string;
+  reason: string;
+  explanation: string | null;
+  required_time: string;
+  items: Array<{ content: string; note: string | null }>;
+};
+
+export function proposalFormPage(user: SessionUser, existing?: ExistingProposal) {
+  const isEdit = !!existing;
+  const title = isEdit ? `Sửa phiếu nháp #${existing.id}` : 'Tạo phiếu đề xuất mới';
+  const initJson = JSON.stringify(
+    existing
+      ? {
+          title: existing.title,
+          reason: existing.reason,
+          explanation: existing.explanation ?? '',
+          required_time: existing.required_time,
+          items:
+            existing.items.length > 0
+              ? existing.items.map((it) => ({ content: it.content, note: it.note ?? '' }))
+              : [{ content: '', note: '' }],
+        }
+      : null,
+  );
+  const cancelHref = isEdit ? `/p/${existing.id}` : '/app';
+
   const body = html`
-    <div x-data="proposalForm()" class="max-w-3xl mx-auto">
-      <h1 class="text-xl font-semibold mb-4">Tạo phiếu đề xuất mới</h1>
+    <div x-data="proposalForm(${initJson}, ${isEdit ? `'${existing.id}'` : 'null'})" class="max-w-3xl mx-auto">
+      <h1 class="text-xl font-semibold mb-4">${title}</h1>
 
       <form @submit.prevent="submit()" class="bg-white rounded-lg border border-slate-200 p-6 space-y-5">
         <div class="grid grid-cols-2 gap-4 text-sm">
@@ -263,7 +290,7 @@ export function newProposalPage(user: SessionUser) {
         </div>
 
         <div class="flex items-center justify-between pt-4 border-t border-slate-200">
-          <a href="/app" class="text-slate-500 hover:text-slate-700 text-sm">← Huỷ</a>
+          <a href="${cancelHref}" class="text-slate-500 hover:text-slate-700 text-sm">← Huỷ</a>
           <div class="flex gap-2">
             <button type="button" @click="save(false)" :disabled="busy"
               class="px-4 py-2 border border-slate-300 rounded text-sm hover:bg-slate-50 disabled:opacity-50">
@@ -279,10 +306,11 @@ export function newProposalPage(user: SessionUser) {
     </div>
 
     <script>
-      function proposalForm() {
+      function proposalForm(initial, editId) {
         return {
           busy: false,
-          form: {
+          editId: editId,
+          form: initial || {
             title: '', reason: '', explanation: '', required_time: '',
             items: [{ content: '', note: '' }],
           },
@@ -301,18 +329,29 @@ export function newProposalPage(user: SessionUser) {
           async save(thenSubmit) {
             this.busy = true;
             try {
-              const r = await fetch('/api/proposals', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(this.payload()),
-              });
-              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
-              const j = await r.json();
+              let id;
+              if (this.editId) {
+                const r = await fetch('/api/proposals/' + this.editId, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(this.payload()),
+                });
+                if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+                id = this.editId;
+              } else {
+                const r = await fetch('/api/proposals', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(this.payload()),
+                });
+                if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+                id = (await r.json()).proposal.id;
+              }
               if (thenSubmit) {
-                const s = await fetch('/api/proposals/' + j.proposal.id + '/submit', { method: 'POST' });
+                const s = await fetch('/api/proposals/' + id + '/submit', { method: 'POST' });
                 if (!s.ok) throw new Error((await s.json()).error || 'Lỗi submit');
               }
-              window.location.href = '/p/' + j.proposal.id;
+              window.location.href = '/p/' + id;
             } catch (e) {
               alert(e.message); this.busy = false;
             }
@@ -322,7 +361,15 @@ export function newProposalPage(user: SessionUser) {
       }
     </script>
   `;
-  return page({ title: 'Tạo phiếu', user, body });
+  return page({ title: isEdit ? 'Sửa phiếu' : 'Tạo phiếu', user, body });
+}
+
+// Aliases để giữ backward-compat với routes/web.ts
+export function newProposalPage(user: SessionUser) {
+  return proposalFormPage(user);
+}
+export function editProposalPage(user: SessionUser, existing: ExistingProposal) {
+  return proposalFormPage(user, existing);
 }
 
 // ---------- Proposal detail ----------

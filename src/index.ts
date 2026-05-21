@@ -12,6 +12,7 @@ import { telegramRoutes } from './routes/telegram';
 import { webRoutes } from './routes/web';
 import { adminRoutes } from './routes/admin';
 import { meRoutes } from './routes/me';
+import { staticRoutes } from './routes/static';
 import { runNotificationQueue } from './lib/notifications';
 
 const app = new Hono<AppEnv>();
@@ -36,6 +37,7 @@ app.route('/api/directory', directoryRoutes);
 app.route('/api/me', meRoutes);
 app.route('/admin', adminRoutes);
 app.route('/telegram', telegramRoutes);
+app.route('/static', staticRoutes);
 app.route('/', webRoutes);
 
 // Cron — retry pending notifications (xem wrangler.toml triggers).

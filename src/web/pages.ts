@@ -35,9 +35,8 @@ export function appPage(user: SessionUser) {
       <div class="flex justify-between items-center">
         <h1 class="text-xl font-semibold">Hộp phiếu</h1>
         <div class="flex items-center gap-2">
-          <button @click="openTelegram()" class="text-sm text-slate-600 hover:text-slate-900 px-3 py-2">
-            <span x-show="!telegramLinked">📱 Liên kết Telegram</span>
-            <span x-show="telegramLinked" class="text-emerald-700">📱 Đã link Telegram</span>
+          <button @click="openSettings()" class="text-sm text-slate-600 hover:text-slate-900 px-3 py-2">
+            ⚙️ Cài đặt
           </button>
           <a href="/p/new" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">
             + Tạo phiếu mới
@@ -45,23 +44,74 @@ export function appPage(user: SessionUser) {
         </div>
       </div>
 
-      <div x-show="tgModal" x-cloak @click.self="tgModal=false"
+      <div x-show="settingsModal" x-cloak @click.self="settingsModal=false"
         class="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50">
-        <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4 space-y-4">
-          <h2 class="text-lg font-semibold">Liên kết Telegram</h2>
-          <ol class="text-sm text-slate-600 space-y-2 list-decimal pl-5">
-            <li>Mở bot Telegram của AVPG (anh KSNB cung cấp username bot).</li>
-            <li>Gửi lệnh: <code class="bg-slate-100 px-2 py-0.5 rounded">/start</code> nếu lần đầu.</li>
-            <li>Copy token bên dưới rồi gửi: <code class="bg-slate-100 px-2 py-0.5 rounded">/link &lt;token&gt;</code></li>
-          </ol>
-          <div x-show="tgToken" class="bg-slate-50 border border-slate-200 rounded p-3 font-mono text-center text-lg" x-text="tgToken"></div>
-          <div x-show="tgToken" class="text-xs text-slate-500 text-center">Token có hiệu lực 10 phút.</div>
-          <div class="flex justify-end gap-2 pt-2 border-t border-slate-200">
-            <button @click="tgModal=false" class="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-900">Đóng</button>
-            <button @click="genToken()" :disabled="tgBusy"
-              class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50">
-              <span x-text="tgToken ? 'Tạo token mới' : 'Tạo token'"></span>
-            </button>
+        <div class="bg-white rounded-lg p-0 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+          <div class="px-6 pt-5 border-b border-slate-200">
+            <div class="flex justify-between items-center mb-3">
+              <h2 class="text-lg font-semibold">Cài đặt cá nhân</h2>
+              <button @click="settingsModal=false" class="text-slate-400 hover:text-slate-600 text-xl leading-none">×</button>
+            </div>
+            <nav class="flex gap-4 text-sm -mb-px">
+              <button @click="settingsTab='telegram'"
+                :class="settingsTab==='telegram' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'"
+                class="border-b-2 py-2 font-medium">📱 Telegram</button>
+              <button @click="settingsTab='signature'"
+                :class="settingsTab==='signature' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'"
+                class="border-b-2 py-2 font-medium">✍️ Chữ ký</button>
+            </nav>
+          </div>
+
+          <!-- Tab Telegram -->
+          <div x-show="settingsTab==='telegram'" class="p-6 space-y-4">
+            <div class="text-sm">
+              Trạng thái:
+              <span x-show="telegramLinked" class="text-emerald-700 font-medium">✓ Đã liên kết</span>
+              <span x-show="!telegramLinked" class="text-slate-500">Chưa liên kết</span>
+            </div>
+            <ol class="text-sm text-slate-600 space-y-1 list-decimal pl-5">
+              <li>Mở bot Telegram <a href="https://t.me/avpg_request_bot" target="_blank" class="text-blue-600 hover:underline">@avpg_request_bot</a>.</li>
+              <li>Gửi <code class="bg-slate-100 px-1 rounded">/start</code> nếu lần đầu.</li>
+              <li>Copy token bên dưới rồi gửi: <code class="bg-slate-100 px-1 rounded">/link &lt;token&gt;</code></li>
+            </ol>
+            <div x-show="tgToken" class="bg-slate-50 border border-slate-200 rounded p-3 font-mono text-center text-lg" x-text="tgToken"></div>
+            <div x-show="tgToken" class="text-xs text-slate-500 text-center">Token có hiệu lực 10 phút.</div>
+            <div class="flex justify-end gap-2 pt-2 border-t border-slate-200">
+              <button @click="genToken()" :disabled="tgBusy"
+                class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50">
+                <span x-text="tgToken ? 'Tạo token mới' : 'Tạo token'"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Tab Chữ ký -->
+          <div x-show="settingsTab==='signature'" class="p-6 space-y-4">
+            <p class="text-sm text-slate-600">
+              Chữ ký (PNG/JPG ≤200KB) sẽ tự động chèn vào phiếu in khi anh đề xuất hoặc duyệt phiếu.
+              Tip: chụp/scan chữ ký trên giấy trắng, crop nền trắng để xuất hiện đẹp.
+            </p>
+            <div x-show="sigBusy" class="text-sm text-slate-500">Đang xử lý…</div>
+
+            <div x-show="!sigBusy && sigDataUrl" class="space-y-3">
+              <div class="text-xs text-slate-500">Chữ ký hiện tại:</div>
+              <div class="border border-slate-200 rounded p-4 flex items-center justify-center bg-slate-50">
+                <img :src="sigDataUrl" alt="signature" class="max-h-32 max-w-full" />
+              </div>
+            </div>
+
+            <div x-show="!sigBusy && !sigDataUrl" class="border border-dashed border-slate-300 rounded p-6 text-center text-sm text-slate-400">
+              Chưa upload chữ ký.
+            </div>
+
+            <div class="space-y-2">
+              <label class="block">
+                <span class="text-sm text-slate-700">Upload chữ ký mới:</span>
+                <input type="file" accept="image/png,image/jpeg" @change="uploadSig($event)" :disabled="sigBusy"
+                  class="block mt-1 w-full text-sm text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+              </label>
+              <button x-show="sigDataUrl" @click="deleteSig()" :disabled="sigBusy"
+                class="text-sm text-rose-600 hover:text-rose-700">Xoá chữ ký</button>
+            </div>
           </div>
         </div>
       </div>
@@ -121,10 +171,16 @@ export function appPage(user: SessionUser) {
           tab: 'mine',
           loading: false,
           proposals: [],
+          // settings modal
+          settingsModal: false,
+          settingsTab: 'telegram',
+          // telegram tab
           telegramLinked: false,
-          tgModal: false,
           tgToken: '',
           tgBusy: false,
+          // signature tab
+          sigDataUrl: null,
+          sigBusy: false,
           tabs: [
             { key: 'mine',           label: 'Phiếu của tôi' },
             { key: 'manager_inbox',  label: 'Tôi cần duyệt (TP)' },
@@ -146,7 +202,16 @@ export function appPage(user: SessionUser) {
             }
           },
           setTab(k) { this.tab = k; this.load(); },
-          openTelegram() { this.tgModal = true; this.tgToken = ''; },
+          async openSettings() {
+            this.settingsModal = true;
+            this.tgToken = '';
+            // Refresh signature state mỗi lần mở
+            try {
+              const r = await fetch('/api/me/signature');
+              const j = await r.json();
+              this.sigDataUrl = j.dataUrl;
+            } catch (e) { /* ignore */ }
+          },
           async genToken() {
             this.tgBusy = true;
             try {
@@ -157,6 +222,43 @@ export function appPage(user: SessionUser) {
               alert('Lỗi: ' + e.message);
             } finally {
               this.tgBusy = false;
+            }
+          },
+          async uploadSig(ev) {
+            const file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            if (file.size > 200 * 1024) {
+              alert('File vượt 200KB. Vui lòng resize/crop trước khi upload.');
+              ev.target.value = '';
+              return;
+            }
+            this.sigBusy = true;
+            try {
+              const fd = new FormData();
+              fd.append('file', file);
+              const r = await fetch('/api/me/signature', { method: 'POST', body: fd });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi upload');
+              // Reload to get fresh dataUrl
+              const s = await fetch('/api/me/signature').then(r => r.json());
+              this.sigDataUrl = s.dataUrl;
+            } catch (e) {
+              alert(e.message);
+            } finally {
+              this.sigBusy = false;
+              ev.target.value = '';
+            }
+          },
+          async deleteSig() {
+            if (!confirm('Xoá chữ ký?')) return;
+            this.sigBusy = true;
+            try {
+              const r = await fetch('/api/me/signature', { method: 'DELETE' });
+              if (!r.ok) throw new Error('Lỗi xoá');
+              this.sigDataUrl = null;
+            } catch (e) {
+              alert(e.message);
+            } finally {
+              this.sigBusy = false;
             }
           },
           goto(id) { window.location.href = '/p/' + id; },
@@ -488,7 +590,13 @@ export function proposalDetailPage(
     <div x-data="detail(${proposal.id})" class="max-w-3xl mx-auto space-y-4">
       <div class="flex items-center justify-between">
         <a href="/app" class="text-sm text-slate-500 hover:text-slate-700">← Hộp phiếu</a>
-        ${statusBadge(status)}
+        <div class="flex items-center gap-3">
+          ${statusBadge(status)}
+          <a href="/p/${String(proposal.id)}/print" target="_blank"
+            class="text-sm text-blue-600 hover:text-blue-700 hover:underline">
+            🖨 In phiếu
+          </a>
+        </div>
       </div>
 
       <div class="bg-white border border-slate-200 rounded-lg p-6 space-y-4">

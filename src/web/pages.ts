@@ -456,36 +456,34 @@ export function proposalDetailPage(
     }
     if (canManagerAct || canBodAct) {
       const role = canManagerAct ? 'manager-action' : 'bod-action';
+      // Không nested x-data: dùng trực tiếp rejectMode/comment từ detail() scope
+      // ($root trong nested x-data trỏ về inner scope, không thấy _do → bug click silent)
       return html`
-        <div class="space-y-2" x-data="{ rejectMode: false, comment: '' }">
-          <template x-if="!rejectMode">
+        <div class="space-y-2">
+          <div class="flex gap-2" x-show="!rejectMode">
+            <button @click="_do('${role}', 'approve', '')" :disabled="busy"
+              class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">
+              ✓ Duyệt
+            </button>
+            <button @click="rejectMode = true"
+              class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium">
+              ✗ Từ chối
+            </button>
+          </div>
+          <div class="space-y-2" x-show="rejectMode" x-cloak>
+            <textarea x-model="comment" rows="2" placeholder="Lý do từ chối…"
+              class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
             <div class="flex gap-2">
-              <button @click="$root._do('${role}', 'approve', '')" :disabled="busy"
-                class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">
-                ✓ Duyệt
+              <button @click="comment.trim() && _do('${role}', 'reject', comment)" :disabled="busy"
+                class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium disabled:opacity-50">
+                Xác nhận từ chối
               </button>
-              <button @click="rejectMode = true"
-                class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium">
-                ✗ Từ chối
+              <button @click="rejectMode = false; comment = ''"
+                class="px-4 py-2 border border-slate-300 rounded text-sm hover:bg-slate-50">
+                Huỷ
               </button>
             </div>
-          </template>
-          <template x-if="rejectMode">
-            <div class="space-y-2">
-              <textarea x-model="comment" rows="2" placeholder="Lý do từ chối…"
-                class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
-              <div class="flex gap-2">
-                <button @click="comment.trim() && $root._do('${role}', 'reject', comment)" :disabled="busy"
-                  class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium disabled:opacity-50">
-                  Xác nhận từ chối
-                </button>
-                <button @click="rejectMode = false; comment = ''"
-                  class="px-4 py-2 border border-slate-300 rounded text-sm hover:bg-slate-50">
-                  Huỷ
-                </button>
-              </div>
-            </div>
-          </template>
+          </div>
         </div>`;
     }
     if (canKsnbComplete) {
@@ -569,6 +567,8 @@ export function proposalDetailPage(
         return {
           id,
           busy: false,
+          rejectMode: false,
+          comment: '',
           async action(kind) {
             this._do(kind, null, null);
           },

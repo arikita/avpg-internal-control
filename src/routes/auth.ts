@@ -57,8 +57,14 @@ authRoutes.get('/callback', async (c) => {
   return c.redirect(returnTo || '/');
 });
 
-// POST /auth/logout
+// POST /auth/logout — clear session + redirect landing (form submit từ header)
 authRoutes.post('/logout', (c) => {
   c.header('Set-Cookie', clearSessionCookie(c.env.APP_ENV === 'production'));
-  return c.json({ ok: true });
+  return c.redirect('/');
+});
+
+// GET /auth/logout — convenient cho link/script redirect.
+authRoutes.get('/logout', (c) => {
+  c.header('Set-Cookie', clearSessionCookie(c.env.APP_ENV === 'production'));
+  return c.redirect('/');
 });

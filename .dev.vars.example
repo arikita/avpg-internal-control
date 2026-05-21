@@ -1,0 +1,25 @@
+# Copy file này thành `.dev.vars` (KHÔNG commit) khi chạy `wrangler dev`.
+# Production secrets: dùng `wrangler secret put <NAME>` thay vì file này.
+
+# ---- Microsoft Entra ID (M365 OIDC) ----
+TENANT_ID="REPLACE_WITH_TENANT_ID"
+CLIENT_ID="REPLACE_WITH_CLIENT_ID"
+CLIENT_SECRET="REPLACE_WITH_CLIENT_SECRET"
+
+# ---- Session cookie signing ----
+# Sinh random: openssl rand -hex 32
+SESSION_SECRET="dev_session_secret_change_me_in_prod"
+
+# ---- Telegram bot ----
+TELEGRAM_BOT_TOKEN="REPLACE_WITH_BOT_TOKEN"
+# Group chat ID của KSNB (thường âm, ví dụ -100123456789)
+KSNB_TELEGRAM_CHAT_ID="REPLACE_WITH_GROUP_CHAT_ID"
+# Secret để verify Telegram webhook (gắn vào path /telegram/webhook/<secret>)
+TELEGRAM_WEBHOOK_SECRET="dev_telegram_webhook_secret"
+
+# ---- Bypass auth khi dev (KHÔNG bật trên prod) ----
+# Khi DEV_MOCK_USER="1", request sẽ tự login như user dưới đây:
+DEV_MOCK_USER="1"
+DEV_MOCK_USER_EMAIL="dev.user@anvietenergy.com"
+DEV_MOCK_USER_NAME="Dev User"
+DEV_MOCK_USER_DEPT="KD"

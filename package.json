@@ -1,0 +1,24 @@
+{
+  "name": "avpg-phieu-de-xuat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AVPG · Hệ thống quy trình đề xuất & phê duyệt nội bộ",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "db:apply:local": "wrangler d1 migrations apply avpg_db --local",
+    "db:apply:remote": "wrangler d1 migrations apply avpg_db --remote",
+    "db:console:local": "wrangler d1 execute avpg_db --local --command",
+    "db:console:remote": "wrangler d1 execute avpg_db --remote --command"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250121.0",
+    "typescript": "^5.7.3",
+    "wrangler": "^3.105.0"
+  }
+}

@@ -1,0 +1,59 @@
+name = "avpg-phieu-de-xuat"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Public env vars (KHÔNG để secret ở đây — dùng wrangler secret hoặc .dev.vars)
+[vars]
+APP_ENV = "development"
+APP_BASE_URL = "http://localhost:8787"
+ENTRA_REDIRECT_PATH = "/auth/callback"
+NO_REPLY_MAILBOX = "no-reply@anvietenergy.com"
+VN_TZ_OFFSET_MINUTES = "420"
+
+# D1 — main database
+[[d1_databases]]
+binding = "DB"
+database_name = "avpg_db"
+database_id = "REPLACE_AFTER_wrangler_d1_create"
+migrations_dir = "migrations"
+
+# KV — telegram pending state, OIDC nonce, session cache
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_AFTER_wrangler_kv_create"
+
+# R2 — attachments (Phase 2, để sẵn binding)
+# [[r2_buckets]]
+# binding = "R2"
+# bucket_name = "avpg-attachments"
+
+# Production overrides — apply khi `wrangler deploy --env production`
+[env.production]
+name = "avpg-phieu-de-xuat-prod"
+
+[env.production.vars]
+APP_ENV = "production"
+APP_BASE_URL = "https://dexuat.avpgtech.com"
+ENTRA_REDIRECT_PATH = "/auth/callback"
+NO_REPLY_MAILBOX = "no-reply@anvietenergy.com"
+VN_TZ_OFFSET_MINUTES = "420"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "avpg_db"
+database_id = "REPLACE_AFTER_wrangler_d1_create"
+migrations_dir = "migrations"
+
+[[env.production.kv_namespaces]]
+binding = "KV"
+id = "REPLACE_AFTER_wrangler_kv_create"
+
+# Custom domain — anh add route trong Cloudflare dashboard sau khi deploy
+# [[env.production.routes]]
+# pattern = "dexuat.avpgtech.com/*"
+# zone_name = "avpgtech.com"
+
+# Cron — gửi lại notifications pending (mỗi 5 phút)
+[triggers]
+crons = ["*/5 * * * *"]

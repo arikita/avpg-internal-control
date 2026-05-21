@@ -51,8 +51,8 @@ webRoutes.get('/p/:id{[0-9]+}/edit', async (c) => {
     }>();
   if (!proposal) throw notFound('Phiếu không tồn tại');
   if (proposal.proposer_user_id !== user.id) throw forbidden('Bạn không phải người tạo phiếu này');
-  if (proposal.status !== 'draft') {
-    throw unprocessable('Chỉ sửa được khi phiếu ở trạng thái nháp');
+  if (!['draft', 'submitted', 'rejected'].includes(proposal.status)) {
+    throw unprocessable('Phiếu không thể sửa ở trạng thái hiện tại');
   }
   const items = await c.env.DB.prepare(
     `SELECT content, note FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,

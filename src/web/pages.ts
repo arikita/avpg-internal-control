@@ -276,6 +276,7 @@ export function appPage(user: SessionUser) {
               manager_approved: ['Chờ BGĐ duyệt', 'bg-blue-100 text-blue-800'],
               completed:        ['Đã duyệt',      'bg-emerald-100 text-emerald-800'],
               rejected:         ['Từ chối',       'bg-rose-100 text-rose-800'],
+              cancelled:        ['Đã huỷ',        'bg-slate-200 text-slate-600'],
             };
             const m = map[status] || [status, 'bg-slate-100 text-slate-700'];
             return '<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ' + m[1] + '">' + m[0] + '</span>';
@@ -299,7 +300,7 @@ type ExistingProposal = {
 
 export function proposalFormPage(user: SessionUser, existing?: ExistingProposal) {
   const isEdit = !!existing;
-  const title = isEdit ? `Sửa phiếu nháp #${existing.id}` : 'Tạo phiếu đề xuất mới';
+  const title = isEdit ? `Sửa phiếu #${existing.id}` : 'Tạo phiếu đề xuất mới';
   const initJson = JSON.stringify(
     existing
       ? {
@@ -483,6 +484,10 @@ export function proposalDetailPage(
   const status = proposal.status as string;
 
   const canSubmit = isOwner && status === 'draft';
+  // Sửa: cho phép khi phiếu chưa có phê duyệt (draft/submitted) hoặc bị từ chối.
+  const canEdit = isOwner && ['draft', 'submitted', 'rejected'].includes(status);
+  // Huỷ: chỉ khi chưa có phê duyệt nào (draft hoặc submitted).
+  const canCancel = isOwner && ['draft', 'submitted'].includes(status);
   const canManagerAct = isManagerOf && status === 'submitted';
   const canBodAct = isBodOf && status === 'manager_approved';
 
@@ -539,16 +544,28 @@ export function proposalDetailPage(
     : html`<p class="text-slate-400 text-sm">Chưa có hành động duyệt nào.</p>`;
 
   const actionBar: Html = ((): Html => {
-    if (canSubmit) {
+    // Owner-side actions. Approver-side (TP/BGĐ) handled riêng bên dưới vì có reject UI.
+    if (!canManagerAct && !canBodAct && (canSubmit || canEdit || canCancel)) {
       return html`
-        <div class="flex gap-2">
-          <button @click="action('submit')" :disabled="busy"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium disabled:opacity-50">
-            Gửi duyệt
-          </button>
-          <a href="/p/${String(proposal.id)}/edit" class="px-4 py-2 border border-slate-300 rounded text-sm hover:bg-slate-50">
-            Sửa
-          </a>
+        <div class="flex flex-wrap gap-2">
+          ${canSubmit
+            ? html`<button @click="action('submit')" :disabled="busy"
+                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium disabled:opacity-50">
+                Gửi duyệt
+              </button>`
+            : ''}
+          ${canEdit
+            ? html`<a href="/p/${String(proposal.id)}/edit"
+                class="px-4 py-2 border border-slate-300 rounded text-sm hover:bg-slate-50">
+                Sửa phiếu
+              </a>`
+            : ''}
+          ${canCancel
+            ? html`<button @click="cancelProposal()" :disabled="busy"
+                class="px-4 py-2 border border-rose-300 text-rose-700 rounded text-sm hover:bg-rose-50 disabled:opacity-50">
+                Huỷ phiếu
+              </button>`
+            : ''}
         </div>`;
     }
     if (canManagerAct || canBodAct) {
@@ -667,6 +684,10 @@ export function proposalDetailPage(
           comment: '',
           async action(kind) {
             this._do(kind, null, null);
+          },
+          async cancelProposal() {
+            if (!confirm('Huỷ phiếu này? Hành động không thể hoàn tác.')) return;
+            this._do('cancel', null, null);
           },
           async _do(endpoint, act, comment) {
             this.busy = true;

@@ -177,13 +177,19 @@ proposalRoutes.get('/:id{[0-9]+}', async (c) => {
   return c.json({ proposal: row, items, approvals: approvals.results ?? [] });
 });
 
-// ---- PATCH /api/proposals/:id → edit draft ----
+// ---- PATCH /api/proposals/:id → edit draft / chưa-phê-duyệt / bị từ chối ----
+// Cho phép: draft (đang nháp), submitted (chưa có ai duyệt), rejected (bị TP/BGĐ từ chối).
+// Khi sửa từ submitted/rejected: revert về draft, giữ code cũ, clear rejected_reason +
+// timestamps duyệt cũ. User cần bấm "Gửi duyệt" lần nữa để re-submit (xem endpoint submit).
 proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
   const id = Number(c.req.param('id'));
   const user = c.get('user');
   const row = await loadProposal(c, id);
   assertOwner(row, user.id);
-  if (row.status !== 'draft') throw unprocessable('Chỉ sửa được khi phiếu ở trạng thái draft');
+  const editable = ['draft', 'submitted', 'rejected'];
+  if (!editable.includes(row.status)) {
+    throw unprocessable('Phiếu không thể sửa ở trạng thái hiện tại');
+  }
 
   const body = await c.req.json<{
     title?: string;
@@ -199,6 +205,10 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
             reason = COALESCE(?3, reason),
             explanation = COALESCE(?4, explanation),
             required_time = COALESCE(?5, required_time),
+            status = CASE WHEN status IN ('submitted','rejected') THEN 'draft' ELSE status END,
+            rejected_reason = NULL,
+            manager_acted_at = NULL,
+            bod_acted_at = NULL,
             updated_at = datetime('now')
       WHERE id = ?1`,
   )
@@ -226,6 +236,26 @@ proposalRoutes.delete('/:id{[0-9]+}', async (c) => {
   return c.json({ ok: true });
 });
 
+// ---- POST /api/proposals/:id/cancel → proposer tự huỷ phiếu ----
+// Cho phép khi phiếu chưa có phê duyệt: draft hoặc submitted.
+// manager_approved/completed/rejected/cancelled đều không huỷ được nữa.
+proposalRoutes.post('/:id{[0-9]+}/cancel', async (c) => {
+  const id = Number(c.req.param('id'));
+  const user = c.get('user');
+  const row = await loadProposal(c, id);
+  assertOwner(row, user.id);
+  const cancellable = ['draft', 'submitted'];
+  if (!cancellable.includes(row.status)) {
+    throw unprocessable('Chỉ huỷ được khi phiếu chưa có phê duyệt');
+  }
+  await c.env.DB.prepare(
+    `UPDATE proposals SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?1`,
+  )
+    .bind(id)
+    .run();
+  return c.json({ proposal: await loadProposal(c, id) });
+});
+
 // ---- POST /api/proposals/:id/submit ----
 proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   const id = Number(c.req.param('id'));
@@ -236,7 +266,9 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
 
   const manager = await getDeptManager(c.env, row.proposer_dept);
   const bod = await getActiveBod(c.env);
-  const code = await nextProposalCode(c.env.DB, row.proposer_dept);
+  // Re-submit sau khi sửa (PATCH revert về draft): giữ nguyên code đã sinh trước đó.
+  // Chỉ sinh code mới khi đây là lần submit đầu tiên (code === null).
+  const code = row.code ?? (await nextProposalCode(c.env.DB, row.proposer_dept));
   const submittedAt = nowIso();
 
   // Edge case 6.1: proposer là Manager phòng mình → auto-approve bước Manager.

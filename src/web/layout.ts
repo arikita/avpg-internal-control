@@ -12,10 +12,51 @@ type LayoutOpts = {
   user?: SessionUser | null | undefined;
   body: Html | string;
   bodyClass?: string;
+  // noChrome: bỏ header/footer + container — dùng cho trang landing full-bleed.
+  noChrome?: boolean;
 };
 
-export async function page({ title, user, body, bodyClass = 'bg-slate-50' }: LayoutOpts): Promise<HtmlEscapedString> {
+export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChrome = false }: LayoutOpts): Promise<HtmlEscapedString> {
   const resolvedBody = typeof body === 'string' ? body : await body;
+  const chrome = noChrome
+    ? html`${resolvedBody}`
+    : html`
+  <header class="bg-gradient-to-r from-blue-950 via-blue-900 to-blue-800 text-white shadow-sm">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3">
+        <span class="text-xl">📋</span>
+        <span class="flex flex-col leading-tight">
+          <span class="text-[10px] tracking-[0.3em] text-yellow-400 font-semibold">AN VIỆT PHÁT GROUP</span>
+          <span class="font-semibold text-white">Phiếu Đề Xuất</span>
+        </span>
+      </a>
+      <nav class="flex items-center gap-4 text-sm">
+        ${user
+          ? html`
+              <a href="/app" class="text-blue-100 hover:text-yellow-400 transition">Dashboard</a>
+              <a href="/p/new" class="text-blue-100 hover:text-yellow-400 transition">Tạo phiếu</a>
+              <span class="text-blue-300/50">|</span>
+              <span class="text-blue-100">${user.name}</span>
+              <form method="post" action="/auth/logout" class="inline">
+                <button type="submit" class="text-blue-200 hover:text-red-300 transition">Đăng xuất</button>
+              </form>
+            `
+          : html`<a href="/auth/login" class="text-yellow-400 hover:underline">Đăng nhập M365</a>`}
+      </nav>
+    </div>
+  </header>
+  <main class="flex-1">
+    <div class="max-w-6xl mx-auto px-4 py-6">
+      ${resolvedBody}
+    </div>
+  </main>
+  <footer class="border-t border-slate-200 bg-white">
+    <div class="max-w-6xl mx-auto px-4 py-3 text-xs text-slate-400 flex justify-between">
+      <span>© 2026 An Việt Phát Group · Hệ thống quy trình nội bộ</span>
+      <span>Phase 1</span>
+    </div>
+  </footer>`;
+
   return html`<!doctype html>
 <html lang="vi">
 <head>
@@ -31,38 +72,7 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50' }: Lay
   </style>
 </head>
 <body class="${bodyClass} text-slate-800 min-h-screen flex flex-col">
-  <header class="bg-white border-b border-slate-200">
-    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2 font-semibold text-slate-900">
-        <span class="text-xl">📋</span>
-        <span>AVPG · Phiếu Đề Xuất</span>
-      </a>
-      <nav class="flex items-center gap-4 text-sm">
-        ${user
-          ? html`
-              <a href="/app" class="text-slate-600 hover:text-slate-900">Dashboard</a>
-              <a href="/p/new" class="text-slate-600 hover:text-slate-900">Tạo phiếu</a>
-              <span class="text-slate-400">|</span>
-              <span class="text-slate-600">${user.name}</span>
-              <form method="post" action="/auth/logout" class="inline">
-                <button type="submit" class="text-slate-500 hover:text-red-600">Đăng xuất</button>
-              </form>
-            `
-          : html`<a href="/auth/login" class="text-blue-600 hover:underline">Đăng nhập M365</a>`}
-      </nav>
-    </div>
-  </header>
-  <main class="flex-1">
-    <div class="max-w-6xl mx-auto px-4 py-6">
-      ${resolvedBody}
-    </div>
-  </main>
-  <footer class="border-t border-slate-200 bg-white">
-    <div class="max-w-6xl mx-auto px-4 py-3 text-xs text-slate-400 flex justify-between">
-      <span>© AVPG · Hệ thống quy trình nội bộ</span>
-      <span>Phase 1</span>
-    </div>
-  </footer>
+  ${chrome}
 </body>
 </html>`;
 }

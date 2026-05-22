@@ -6,26 +6,105 @@ import type { SessionUser } from '../types';
 
 // ---------- Landing ----------
 export function landingPage(user: SessionUser | null) {
-  const body = user
-    ? html`<script>window.location.href='/app';</script>
-        <p class="text-slate-500">Đang chuyển hướng…</p>`
-    : html`
-        <div class="max-w-xl mx-auto bg-white rounded-lg border border-slate-200 p-8 mt-12 text-center">
-          <h1 class="text-2xl font-semibold mb-2">Phiếu Đề Xuất</h1>
-          <p class="text-slate-600 mb-6">
-            Hệ thống quy trình đề xuất & phê duyệt nội bộ AVPG.<br />
-            Đăng nhập bằng tài khoản M365 của bạn để bắt đầu.
+  if (user) {
+    return page({
+      title: 'Trang chủ',
+      user,
+      body: html`<script>window.location.href='/app';</script>
+        <p class="text-slate-500">Đang chuyển hướng…</p>`,
+    });
+  }
+
+  const features: Array<{ title: string; desc: string }> = [
+    { title: 'Tạo phiếu online', desc: 'Đề xuất nhanh qua web — không phải in giấy' },
+    { title: 'Duyệt 2 cấp', desc: 'Trưởng phòng → Ban Giám đốc, auto routing' },
+    { title: 'In phiếu HR-10', desc: 'Có chữ ký TP/BGĐ tự động, đúng biểu mẫu' },
+    { title: 'Thông báo realtime', desc: 'Email + Telegram khi có phiếu mới' },
+  ];
+
+  const body = html`
+    <div class="min-h-screen flex">
+      <!-- Left: blue panel -->
+      <div class="hidden lg:flex w-1/2 bg-gradient-to-br from-blue-950 via-blue-900 to-blue-800 text-white p-12 flex-col justify-between relative overflow-hidden">
+        <!-- Subtle diagonal pattern -->
+        <div class="absolute inset-0 opacity-10" style="background-image: repeating-linear-gradient(45deg, transparent, transparent 20px, rgba(255,255,255,0.1) 20px, rgba(255,255,255,0.1) 22px);"></div>
+
+        <div class="relative z-10 max-w-md mx-auto w-full flex-1 flex flex-col justify-center">
+          <!-- Logo placeholder — anh upload logo AVPG sau thì thay vào -->
+          <div class="text-center mb-8">
+            <p class="text-sm tracking-[0.3em] text-yellow-400 font-semibold">AN VIỆT PHÁT GROUP</p>
+          </div>
+
+          <!-- Title -->
+          <h1 class="text-3xl font-bold text-center leading-tight">
+            Phiếu Đề Xuất<br>
+            <span class="text-yellow-400">An Việt Phát Group</span>
+          </h1>
+
+          <!-- Subtitle -->
+          <p class="text-center text-blue-100 mt-4 mb-10 leading-relaxed">
+            Hệ thống quy trình đề xuất &amp; phê duyệt nội bộ, áp dụng cho toàn bộ nhân viên các công ty thành viên tập đoàn.
           </p>
+
+          <!-- Icons row -->
+          <div class="flex justify-center gap-6 mb-8 text-yellow-400">
+            <svg viewBox="0 0 24 24" class="w-12 h-12" fill="currentColor"><path d="M12 1L3 5v6c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V5l-9-4zm-1 16l-4-4 1.4-1.4L11 14.2l5.6-5.6L18 10l-7 7z"/></svg>
+            <svg viewBox="0 0 24 24" class="w-12 h-12" fill="currentColor"><path d="M12 1L2 6v2h20V6L12 1zm-8 9v8H2v2h20v-2h-2v-8h-2v8h-3v-8h-2v8h-2v-8H9v8H6v-8H4z"/></svg>
+            <svg viewBox="0 0 24 24" class="w-12 h-12" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+          </div>
+
+          <!-- Feature cards 2x2 -->
+          <div class="grid grid-cols-2 gap-3">
+            ${features.map(
+              (f) => html`
+                <div class="bg-blue-800/40 border border-blue-700/50 rounded-lg p-3 text-center backdrop-blur-sm">
+                  <div class="text-yellow-400 text-sm font-semibold flex items-center justify-center gap-1.5 mb-1">
+                    <svg viewBox="0 0 20 20" class="w-4 h-4" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                    <span>${f.title}</span>
+                  </div>
+                  <div class="text-xs text-blue-100/80 leading-snug">${f.desc}</div>
+                </div>
+              `,
+            )}
+          </div>
+        </div>
+
+        <div class="relative z-10 text-center text-xs text-blue-200/70">© 2026 An Việt Phát Group</div>
+      </div>
+
+      <!-- Right: white login panel -->
+      <div class="w-full lg:w-1/2 bg-white flex items-center justify-center p-8">
+        <div class="max-w-md w-full">
+          <!-- Logo placeholder — anh upload logo AVPG sau thì thay vào -->
+          <div class="text-center mb-8">
+            <p class="text-xs tracking-[0.3em] text-yellow-600 font-semibold">AN VIỆT PHÁT GROUP</p>
+            <p class="text-[10px] text-slate-400 italic mt-1">Together growing strong &amp; success</p>
+          </div>
+
+          <h2 class="text-3xl font-bold text-center text-slate-900 mb-2">Đăng nhập</h2>
+          <p class="text-slate-500 text-center text-sm mb-8 leading-relaxed">
+            Vui lòng đăng nhập bằng tài khoản M365 của anh/chị<br>
+            để truy cập hệ thống Phiếu Đề Xuất.
+          </p>
+
           <a href="/auth/login"
-             class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2.5 rounded">
-             Đăng nhập M365
+             class="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white font-semibold py-3 rounded-lg shadow-md transition">
+            <svg viewBox="0 0 23 23" class="w-5 h-5"><rect x="1" y="1" width="10" height="10" fill="#F25022"/><rect x="12" y="1" width="10" height="10" fill="#7FBA00"/><rect x="1" y="12" width="10" height="10" fill="#00A4EF"/><rect x="12" y="12" width="10" height="10" fill="#FFB900"/></svg>
+            <span>Đăng nhập M365</span>
           </a>
-          <p class="text-xs text-slate-400 mt-6">
+
+          <p class="text-xs text-slate-400 text-center mt-8 leading-relaxed">
+            Bằng việc đăng nhập, anh/chị đồng ý tuân thủ chính sách<br>
+            bảo mật thông tin của An Việt Phát Group.
+          </p>
+          <p class="text-xs text-slate-400 text-center mt-3">
             Chưa được gán phòng ban? Liên hệ KSNB để được hỗ trợ.
           </p>
         </div>
-      `;
-  return page({ title: 'Trang chủ', user, body });
+      </div>
+    </div>
+  `;
+  return page({ title: 'Đăng nhập', user, body, bodyClass: 'bg-white', noChrome: true });
 }
 
 // ---------- App dashboard ----------
@@ -40,14 +119,17 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
   // Inline literals — chỉ bool/number, không cần escape JSON.
   const args = `${role.isManager}, ${role.isBod}, ${role.pendingManager}, ${role.pendingBod}`;
   const body = html`
-    <div x-data="dashboard(${args})" x-init="load()" class="space-y-4">
+    <div x-data="dashboard(${args})" x-init="load()" class="space-y-5">
       <div class="flex justify-between items-center">
-        <h1 class="text-xl font-semibold">Hộp phiếu</h1>
+        <div>
+          <h1 class="text-2xl font-bold text-slate-900">Hộp phiếu</h1>
+          <p class="text-sm text-slate-500 mt-0.5">Quản lý phiếu đề xuất của anh/chị và phiếu cần duyệt</p>
+        </div>
         <div class="flex items-center gap-2">
           <button @click="openSettings()" class="text-sm text-slate-600 hover:text-slate-900 px-3 py-2">
             ⚙️ Cài đặt
           </button>
-          <a href="/p/new" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded">
+          <a href="/p/new" class="bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">
             + Tạo phiếu mới
           </a>
         </div>
@@ -63,10 +145,10 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             </div>
             <nav class="flex gap-4 text-sm -mb-px">
               <button @click="settingsTab='telegram'"
-                :class="settingsTab==='telegram' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'"
+                :class="settingsTab==='telegram' ? 'border-blue-900 text-blue-900' : 'border-transparent text-slate-500 hover:text-slate-700'"
                 class="border-b-2 py-2 font-medium">📱 Telegram</button>
               <button @click="settingsTab='signature'"
-                :class="settingsTab==='signature' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-700'"
+                :class="settingsTab==='signature' ? 'border-blue-900 text-blue-900' : 'border-transparent text-slate-500 hover:text-slate-700'"
                 class="border-b-2 py-2 font-medium">✍️ Chữ ký</button>
             </nav>
           </div>
@@ -79,7 +161,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
               <span x-show="!telegramLinked" class="text-slate-500">Chưa liên kết</span>
             </div>
             <ol class="text-sm text-slate-600 space-y-1 list-decimal pl-5">
-              <li>Mở bot Telegram <a href="https://t.me/avpg_request_bot" target="_blank" class="text-blue-600 hover:underline">@avpg_request_bot</a>.</li>
+              <li>Mở bot Telegram <a href="https://t.me/avpg_request_bot" target="_blank" class="text-blue-900 hover:underline">@avpg_request_bot</a>.</li>
               <li>Gửi <code class="bg-slate-100 px-1 rounded">/start</code> nếu lần đầu.</li>
               <li>Copy token bên dưới rồi gửi: <code class="bg-slate-100 px-1 rounded">/link &lt;token&gt;</code></li>
             </ol>
@@ -87,7 +169,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             <div x-show="tgToken" class="text-xs text-slate-500 text-center">Token có hiệu lực 10 phút.</div>
             <div class="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button @click="genToken()" :disabled="tgBusy"
-                class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded disabled:opacity-50">
+                class="px-4 py-1.5 bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white text-sm rounded disabled:opacity-50">
                 <span x-text="tgToken ? 'Tạo token mới' : 'Tạo token'"></span>
               </button>
             </div>
@@ -130,7 +212,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           <template x-for="t in tabs" :key="t.key">
             <button @click="setTab(t.key)"
               :class="tab === t.key
-                ? 'border-blue-600 text-blue-700'
+                ? 'border-blue-900 text-blue-900'
                 : 'border-transparent text-slate-500 hover:text-slate-700'"
               class="border-b-2 py-2 px-1 font-medium inline-flex items-center gap-1.5">
               <span x-text="t.label"></span>
@@ -144,32 +226,35 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
 
       <div x-show="loading" class="text-slate-500 text-sm">Đang tải…</div>
 
-      <div x-show="!loading && proposals.length === 0" class="text-slate-400 text-sm py-8 text-center">
-        Không có phiếu nào.
+      <div x-show="!loading && proposals.length === 0"
+        class="bg-white border-2 border-dashed border-slate-200 rounded-xl py-16 text-center">
+        <div class="text-5xl mb-3 opacity-50">📭</div>
+        <div class="text-slate-500 text-sm">Không có phiếu nào ở mục này.</div>
       </div>
 
-      <div x-show="!loading && proposals.length > 0" class="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-600">
+      <div x-show="!loading && proposals.length > 0" class="bg-white rounded-xl shadow-sm ring-1 ring-slate-200 overflow-hidden">
+        <table class="w-full">
+          <thead class="bg-gradient-to-r from-slate-50 to-slate-100 text-slate-700 border-b-2 border-slate-200">
             <tr>
-              <th class="text-left px-4 py-2 font-medium">Mã phiếu</th>
-              <th class="text-left px-4 py-2 font-medium">Nội dung</th>
-              <th class="text-left px-4 py-2 font-medium">Người đề nghị</th>
-              <th class="text-left px-4 py-2 font-medium">Phòng</th>
-              <th class="text-left px-4 py-2 font-medium">Trạng thái</th>
-              <th class="text-left px-4 py-2 font-medium">Cập nhật</th>
+              <th class="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider">Mã phiếu</th>
+              <th class="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider">Nội dung</th>
+              <th class="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider">Người đề nghị</th>
+              <th class="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider">Phòng</th>
+              <th class="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider">Trạng thái</th>
+              <th class="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider">Cập nhật</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody class="divide-y divide-slate-100">
             <template x-for="p in proposals" :key="p.id">
-              <tr class="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+              <tr class="hover:bg-blue-50/40 cursor-pointer transition-colors group"
                   @click="goto(p.id)">
-                <td class="px-4 py-2 font-mono text-xs" x-text="p.code || '(chưa submit)'"></td>
-                <td class="px-4 py-2" x-text="p.title"></td>
-                <td class="px-4 py-2 text-slate-600" x-text="p.proposer_name"></td>
-                <td class="px-4 py-2 text-slate-600" x-text="p.proposer_dept"></td>
-                <td class="px-4 py-2" x-html="badge(p.status)"></td>
-                <td class="px-4 py-2 text-slate-500 text-xs" x-text="fmt(p.updated_at)"></td>
+                <td class="px-4 py-3.5 font-mono text-xs font-semibold text-blue-900 group-hover:text-blue-700"
+                    x-text="p.code || '— nháp —'"></td>
+                <td class="px-4 py-3.5 font-medium text-slate-900" x-text="p.title"></td>
+                <td class="px-4 py-3.5 text-sm text-slate-600" x-text="p.proposer_name"></td>
+                <td class="px-4 py-3.5 text-sm text-slate-600" x-text="p.proposer_dept"></td>
+                <td class="px-4 py-3.5" x-html="badge(p.status)"></td>
+                <td class="px-4 py-3.5 text-slate-500 text-xs whitespace-nowrap" x-text="fmt(p.updated_at)"></td>
               </tr>
             </template>
           </tbody>
@@ -297,15 +382,15 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           },
           badge(status) {
             const map = {
-              draft:            ['Nháp',          'bg-slate-100 text-slate-700'],
-              submitted:        ['Chờ TP duyệt',  'bg-amber-100 text-amber-800'],
-              manager_approved: ['Chờ BGĐ duyệt', 'bg-blue-100 text-blue-800'],
-              completed:        ['Đã duyệt',      'bg-emerald-100 text-emerald-800'],
-              rejected:         ['Từ chối',       'bg-rose-100 text-rose-800'],
-              cancelled:        ['Đã huỷ',        'bg-slate-200 text-slate-600'],
+              draft:            ['Nháp',          'bg-slate-100 text-slate-700 ring-slate-200'],
+              submitted:        ['Chờ TP duyệt',  'bg-amber-100 text-amber-800 ring-amber-200'],
+              manager_approved: ['Chờ BGĐ duyệt', 'bg-blue-100 text-blue-800 ring-blue-200'],
+              completed:        ['Đã duyệt',      'bg-emerald-100 text-emerald-800 ring-emerald-200'],
+              rejected:         ['Từ chối',       'bg-rose-100 text-rose-800 ring-rose-200'],
+              cancelled:        ['Đã huỷ',        'bg-slate-200 text-slate-600 ring-slate-300'],
             };
-            const m = map[status] || [status, 'bg-slate-100 text-slate-700'];
-            return '<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ' + m[1] + '">' + m[0] + '</span>';
+            const m = map[status] || [status, 'bg-slate-100 text-slate-700 ring-slate-200'];
+            return '<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ring-inset ' + m[1] + '">' + m[0] + '</span>';
           },
         };
       }
@@ -378,15 +463,21 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
         </div>
 
         <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">Thời gian cần thực hiện <span class="text-rose-600">*</span></label>
-          <input x-model="form.required_time" type="text" required placeholder="VD: trước 15/06/2026"
-            class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" />
+          <label class="block text-sm font-medium text-slate-700 mb-1">
+            Thời gian cần thực hiện
+            <span class="text-slate-400 font-normal text-xs">(không bắt buộc, định dạng DD/MM/YYYY)</span>
+          </label>
+          <input x-model="form.required_time" type="text" placeholder="VD: 15/06/2026"
+            inputmode="numeric" maxlength="10"
+            :class="requiredTimeError ? 'border-rose-500 focus:ring-rose-500 focus:border-rose-500' : 'border-slate-300 focus:ring-blue-500 focus:border-blue-500'"
+            class="w-full px-3 py-2 border rounded focus:ring-2 outline-none" />
+          <p x-show="requiredTimeError" class="text-xs text-rose-600 mt-1" x-text="requiredTimeError"></p>
         </div>
 
         <div>
           <div class="flex items-center justify-between mb-2">
             <label class="text-sm font-medium text-slate-700">Danh sách hạng mục</label>
-            <button type="button" @click="addItem()" class="text-blue-600 hover:text-blue-700 text-sm">+ Thêm dòng</button>
+            <button type="button" @click="addItem()" class="text-blue-900 hover:text-blue-700 text-sm">+ Thêm dòng</button>
           </div>
           <div class="overflow-hidden border border-slate-200 rounded">
             <table class="w-full text-sm">
@@ -422,7 +513,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
               Lưu nháp
             </button>
             <button type="submit" :disabled="busy"
-              class="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium disabled:opacity-50">
+              class="px-5 py-2 bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white rounded text-sm font-medium disabled:opacity-50">
               <span x-text="busy ? 'Đang gửi…' : 'Gửi duyệt'"></span>
             </button>
           </div>
@@ -439,19 +530,32 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
             title: '', reason: '', explanation: '', required_time: '',
             items: [{ content: '', note: '' }],
           },
+          get requiredTimeError() {
+            const s = (this.form.required_time || '').trim();
+            if (!s) return ''; // optional, để trống OK
+            const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            if (!m) return 'Định dạng phải là DD/MM/YYYY (VD: 15/06/2026)';
+            const d = +m[1], mo = +m[2], y = +m[3];
+            if (y < 1900 || y > 2100) return 'Năm phải trong khoảng 1900–2100';
+            if (mo < 1 || mo > 12) return 'Tháng không hợp lệ';
+            const dim = new Date(y, mo, 0).getDate();
+            if (d < 1 || d > dim) return 'Ngày không hợp lệ trong tháng ' + mo;
+            return '';
+          },
           addItem() { this.form.items.push({ content: '', note: '' }); },
           payload() {
             return {
               title: this.form.title,
               reason: this.form.reason,
               explanation: this.form.explanation || null,
-              required_time: this.form.required_time,
+              required_time: (this.form.required_time || '').trim() || null,
               items: this.form.items
                 .filter(it => (it.content || '').trim())
                 .map((it, idx) => ({ seq: idx + 1, content: it.content.trim(), note: (it.note || '').trim() || null })),
             };
           },
           async save(thenSubmit) {
+            if (this.requiredTimeError) { alert(this.requiredTimeError); return; }
             this.busy = true;
             try {
               let id;
@@ -576,7 +680,7 @@ export function proposalDetailPage(
         <div class="flex flex-wrap gap-2">
           ${canSubmit
             ? html`<button @click="action('submit')" :disabled="busy"
-                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium disabled:opacity-50">
+                class="px-4 py-2 bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white rounded text-sm font-medium disabled:opacity-50">
                 Gửi duyệt
               </button>`
             : ''}
@@ -636,7 +740,7 @@ export function proposalDetailPage(
         <div class="flex items-center gap-3">
           ${statusBadge(status)}
           <a href="/p/${String(proposal.id)}/print" target="_blank"
-            class="text-sm text-blue-600 hover:text-blue-700 hover:underline">
+            class="text-sm text-blue-900 hover:text-blue-700 hover:underline">
             🖨 In phiếu
           </a>
         </div>
@@ -672,10 +776,12 @@ export function proposalDetailPage(
         ${proposal.explanation
           ? html`<div><div class="text-xs text-slate-500 mb-1">Diễn giải</div><div class="whitespace-pre-wrap">${proposal.explanation as string}</div></div>`
           : ''}
-        <div>
-          <div class="text-xs text-slate-500 mb-1">Thời gian cần thực hiện</div>
-          <div>${proposal.required_time as string}</div>
-        </div>
+        ${proposal.required_time
+          ? html`<div>
+              <div class="text-xs text-slate-500 mb-1">Thời gian cần thực hiện</div>
+              <div>${proposal.required_time as string}</div>
+            </div>`
+          : ''}
 
         <div>
           <div class="text-xs text-slate-500 mb-1">Hạng mục</div>

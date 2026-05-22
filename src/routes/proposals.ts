@@ -41,6 +41,19 @@ type ProposalRow = {
 
 type ItemInput = { seq: number; content: string; note?: string | null };
 
+// Validate DD/MM/YYYY chuẩn (đúng số ngày trong tháng, năm 1900-2100).
+function isValidDdMmYyyy(s: string): boolean {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+  if (!m) return false;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  if (year < 1900 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+  const daysInMonth = new Date(year, month, 0).getDate();
+  return day >= 1 && day <= daysInMonth;
+}
+
 // ---- helpers ----
 async function loadProposal(c: { env: AppEnv['Bindings'] }, id: number): Promise<ProposalRow> {
   const row = await c.env.DB.prepare(`SELECT * FROM proposals WHERE id = ?1`)
@@ -109,7 +122,9 @@ proposalRoutes.post('/', async (c) => {
   const required_time = (body.required_time ?? '').trim();
   if (!title) throw badRequest('Thiếu Nội dung đề xuất');
   if (!reason) throw badRequest('Thiếu Lý do đề nghị');
-  if (!required_time) throw badRequest('Thiếu Thời gian cần thực hiện');
+  if (required_time && !isValidDdMmYyyy(required_time)) {
+    throw badRequest('Thời gian cần thực hiện phải đúng định dạng DD/MM/YYYY');
+  }
 
   const res = await c.env.DB.prepare(
     `INSERT INTO proposals
@@ -198,6 +213,10 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
     required_time?: string;
     items?: ItemInput[];
   }>();
+
+  if (body.required_time && body.required_time.trim() && !isValidDdMmYyyy(body.required_time.trim())) {
+    throw badRequest('Thời gian cần thực hiện phải đúng định dạng DD/MM/YYYY');
+  }
 
   await c.env.DB.prepare(
     `UPDATE proposals

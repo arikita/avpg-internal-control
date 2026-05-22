@@ -28,3 +28,4 @@ npm-debug.log*
 .~lock.*
 .cf-token
 .prod-generated-secrets
+backup-*.sql

@@ -130,26 +130,32 @@ async function replaceItems(
   ];
   if (proposalType === 'purchase') {
     for (const it of items) {
+      const qtyStock = it.qty_stock ?? null;
       const qtyBuy = it.qty_buy ?? null;
       const unitPrice = it.unit_price ?? null;
       const total =
         qtyBuy != null && unitPrice != null ? lineTotal({ qty_buy: qtyBuy, unit_price: unitPrice }) : null;
+      // content NOT NULL ở schema cũ → mirror item_name vào content để không vỡ constraint
+      // và phiếu cũ-style reader vẫn thấy tên hàng nếu có ai query trực tiếp.
+      const contentMirror = (it.item_name ?? '').trim();
       stmts.push(
         env.DB.prepare(
           `INSERT INTO proposal_items
              (proposal_id, seq, content, note,
               item_name, spec, unit, qty_stock, qty_buy, unit_price, line_total, purpose)
-           VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+           VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
         ).bind(
-          proposalId,
-          it.seq,
-          it.item_name ?? null,
-          it.spec ?? null,
-          it.unit ?? null,
-          qtyBuy,
-          unitPrice,
-          total,
-          it.purpose ?? null,
+          proposalId,            // ?1 proposal_id
+          it.seq,                // ?2 seq
+          contentMirror,         // ?3 content
+          it.item_name ?? null,  // ?4 item_name
+          it.spec ?? null,       // ?5 spec
+          it.unit ?? null,       // ?6 unit
+          qtyStock,              // ?7 qty_stock
+          qtyBuy,                // ?8 qty_buy
+          unitPrice,             // ?9 unit_price
+          total,                 // ?10 line_total
+          it.purpose ?? null,    // ?11 purpose
         ),
       );
     }

@@ -524,7 +524,9 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
   const initJson = JSON.stringify(initialState);
 
   const body = html`
-    <div x-data="proposalForm(${initJson}, ${isEdit ? `'${existing.id}'` : 'null'})" class="max-w-3xl mx-auto">
+    <div x-data="proposalForm(${initJson}, ${isEdit ? `'${existing.id}'` : 'null'})"
+      :class="form.proposal_type==='purchase' ? 'max-w-6xl' : 'max-w-3xl'"
+      class="mx-auto">
       <h1 class="text-xl font-semibold mb-4">${title}</h1>
 
       <form @submit.prevent="submit()" class="bg-white rounded-lg border border-slate-200 p-6 space-y-5">
@@ -675,7 +677,12 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
                       <td class="px-1 py-1"><input x-model="it.unit" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
                       <td class="px-1 py-1"><input x-model.number="it.qty_stock" type="number" min="0" class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
                       <td class="px-1 py-1"><input x-model.number="it.qty_buy" type="number" min="0" class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
-                      <td class="px-1 py-1"><input x-model.number="it.unit_price" type="number" min="0" step="1000" class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
+                      <td class="px-1 py-1"><input type="text" inputmode="numeric"
+                        :value="fmtVnd(it.unit_price)"
+                        @focus="$event.target.value = it.unit_price || ''"
+                        @input="it.unit_price = parseVnd($event.target.value)"
+                        @blur="it.unit_price = parseVnd($event.target.value); $event.target.value = fmtVnd(it.unit_price)"
+                        class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
                       <td class="px-2 py-1 text-right font-medium text-slate-700" x-text="fmtVnd((+it.qty_buy||0) * (+it.unit_price||0))"></td>
                       <td class="px-1 py-1"><input x-model="it.purpose" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
                       <td class="px-1 py-1 text-center">
@@ -755,10 +762,13 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
             if (n == null || isNaN(+n)) return '0';
             return (+n).toLocaleString('vi-VN');
           },
+          parseVnd(s) {
+            return Number(String(s || '').replace(/\\D/g, '')) || 0;
+          },
           get requiredTimeError() {
             const s = (this.form.required_time || '').trim();
             if (!s) return '';
-            const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            const m = s.match(/^(\\d{2})\\/(\\d{2})\\/(\\d{4})$/);
             if (!m) return 'Định dạng phải là DD/MM/YYYY (VD: 15/06/2026)';
             const d = +m[1], mo = +m[2], y = +m[3];
             if (y < 1900 || y > 2100) return 'Năm phải trong khoảng 1900–2100';
@@ -770,7 +780,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
           get deliveryDateError() {
             const s = (this.form.delivery_date || '').trim();
             if (!s) return '';
-            const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            const m = s.match(/^(\\d{2})\\/(\\d{2})\\/(\\d{4})$/);
             if (!m) return 'Định dạng phải là DD/MM/YYYY';
             const d = +m[1], mo = +m[2], y = +m[3];
             if (y < 1900 || y > 2100) return 'Năm phải trong khoảng 1900–2100';

@@ -5,7 +5,7 @@
   "description": "AVPG · Hệ thống quy trình đề xuất & phê duyệt nội bộ",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --env production",
     "tail": "wrangler tail",
     "typecheck": "tsc --noEmit",
     "db:apply:local": "wrangler d1 migrations apply avpg_db --local",

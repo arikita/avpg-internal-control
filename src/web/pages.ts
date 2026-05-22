@@ -29,9 +29,18 @@ export function landingPage(user: SessionUser | null) {
 }
 
 // ---------- App dashboard ----------
-export function appPage(user: SessionUser) {
+export type DashboardRoleInfo = {
+  isManager: boolean;
+  isBod: boolean;
+  pendingManager: number;
+  pendingBod: number;
+};
+
+export function appPage(user: SessionUser, role: DashboardRoleInfo) {
+  // Inline literals — chỉ bool/number, không cần escape JSON.
+  const args = `${role.isManager}, ${role.isBod}, ${role.pendingManager}, ${role.pendingBod}`;
   const body = html`
-    <div x-data="dashboard()" x-init="load()" class="space-y-4">
+    <div x-data="dashboard(${args})" x-init="load()" class="space-y-4">
       <div class="flex justify-between items-center">
         <h1 class="text-xl font-semibold">Hộp phiếu</h1>
         <div class="flex items-center gap-2">
@@ -123,8 +132,11 @@ export function appPage(user: SessionUser) {
               :class="tab === t.key
                 ? 'border-blue-600 text-blue-700'
                 : 'border-transparent text-slate-500 hover:text-slate-700'"
-              class="border-b-2 py-2 px-1 font-medium">
+              class="border-b-2 py-2 px-1 font-medium inline-flex items-center gap-1.5">
               <span x-text="t.label"></span>
+              <span x-show="t.count > 0"
+                class="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-rose-600 text-white text-xs font-semibold leading-none"
+                x-text="t.count"></span>
             </button>
           </template>
         </nav>
@@ -166,11 +178,13 @@ export function appPage(user: SessionUser) {
     </div>
 
     <script>
-      function dashboard() {
+      function dashboard(isManager, isBod, pendingManager, pendingBod) {
         return {
           tab: 'mine',
           loading: false,
           proposals: [],
+          isManager, isBod, pendingManager, pendingBod,
+          tabs: [],
           // settings modal
           settingsModal: false,
           settingsTab: 'telegram',
@@ -181,20 +195,32 @@ export function appPage(user: SessionUser) {
           // signature tab
           sigDataUrl: null,
           sigBusy: false,
-          tabs: [
-            { key: 'mine',           label: 'Phiếu của tôi' },
-            { key: 'manager_inbox',  label: 'Tôi cần duyệt (TP)' },
-            { key: 'bod_inbox',      label: 'Tôi cần duyệt (BGĐ)' },
-          ],
+          init() { this.rebuildTabs(); },
+          rebuildTabs() {
+            const arr = [{ key: 'mine', label: 'Phiếu của tôi', count: 0 }];
+            if (this.isManager) {
+              arr.push({ key: 'manager_inbox', label: 'Tôi cần duyệt (TP)', count: this.pendingManager });
+            }
+            if (this.isBod) {
+              arr.push({ key: 'bod_inbox', label: 'Tôi cần duyệt (BGĐ)', count: this.pendingBod });
+            }
+            this.tabs = arr;
+          },
           async load() {
             this.loading = true;
             try {
-              const [pr, tg] = await Promise.all([
+              const [pr, tg, counts] = await Promise.all([
                 fetch('/api/proposals?scope=' + this.tab).then(r => r.json()),
                 fetch('/api/me/telegram-status').then(r => r.json()),
+                fetch('/api/me/inbox-counts').then(r => r.json()),
               ]);
               this.proposals = pr.proposals || [];
               this.telegramLinked = !!tg.linked;
+              this.isManager = !!counts.isManager;
+              this.isBod = !!counts.isBod;
+              this.pendingManager = counts.pendingManager || 0;
+              this.pendingBod = counts.pendingBod || 0;
+              this.rebuildTabs();
             } catch (e) {
               alert('Lỗi tải dữ liệu: ' + e.message);
             } finally {

@@ -16,10 +16,40 @@ export const webRoutes = new Hono<AppEnv>();
 
 webRoutes.get('/', (c) => c.html(landingPage(c.get('user') ?? null)));
 
-webRoutes.get('/app', (c) => {
+webRoutes.get('/app', async (c) => {
   const user = c.get('user');
   if (!user) return c.redirect('/auth/login?return_to=/app');
-  return c.html(appPage(user));
+  const email = user.email.toLowerCase();
+  const [mgrRow, bodRow, pendMgr, pendBod] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT 1 FROM department_managers WHERE LOWER(user_email) = ?1 AND is_active = 1 LIMIT 1`,
+    )
+      .bind(email)
+      .first(),
+    c.env.DB.prepare(`SELECT 1 FROM bod_members WHERE LOWER(user_email) = ?1 LIMIT 1`)
+      .bind(email)
+      .first(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM proposals WHERE LOWER(manager_email) = ?1 AND status = 'submitted'`,
+    )
+      .bind(email)
+      .first<{ n: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM proposals WHERE LOWER(bod_email) = ?1 AND status = 'manager_approved'`,
+    )
+      .bind(email)
+      .first<{ n: number }>(),
+  ]);
+  const pendingManager = pendMgr?.n ?? 0;
+  const pendingBod = pendBod?.n ?? 0;
+  return c.html(
+    appPage(user, {
+      isManager: !!mgrRow || pendingManager > 0,
+      isBod: !!bodRow || pendingBod > 0,
+      pendingManager,
+      pendingBod,
+    }),
+  );
 });
 
 webRoutes.get('/p/new', (c) => {

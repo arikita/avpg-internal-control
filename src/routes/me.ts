@@ -97,13 +97,21 @@ meRoutes.delete('/signature', async (c) => {
 meRoutes.get('/inbox-counts', async (c) => {
   const user = c.get('user');
   const email = user.email.toLowerCase();
-  const [mgrRow, bodRow, pendMgr, pendBod] = await Promise.all([
+  const [mgrRow, bodRow, enRow, icRow, pendMgr, pendBod, pendEn, pendIc] = await Promise.all([
     c.env.DB.prepare(
       `SELECT 1 FROM department_managers WHERE LOWER(user_email) = ?1 AND is_active = 1 LIMIT 1`,
     )
       .bind(email)
       .first(),
-    c.env.DB.prepare(`SELECT 1 FROM bod_members WHERE LOWER(user_email) = ?1 LIMIT 1`)
+    c.env.DB.prepare(`SELECT 1 FROM bod_members WHERE LOWER(user_email) = ?1 AND is_active = 1 LIMIT 1`)
+      .bind(email)
+      .first(),
+    c.env.DB.prepare(
+      `SELECT 1 FROM engineering_members WHERE LOWER(user_email) = ?1 AND is_active = 1 LIMIT 1`,
+    )
+      .bind(email)
+      .first(),
+    c.env.DB.prepare(`SELECT 1 FROM ic_members WHERE LOWER(user_email) = ?1 AND is_active = 1 LIMIT 1`)
       .bind(email)
       .first(),
     c.env.DB.prepare(
@@ -112,19 +120,50 @@ meRoutes.get('/inbox-counts', async (c) => {
       .bind(email)
       .first<{ n: number }>(),
     c.env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM proposals WHERE LOWER(bod_email) = ?1 AND status = 'manager_approved'`,
+      `SELECT COUNT(*) AS n FROM proposals
+        WHERE LOWER(bod_email) = ?1
+          AND (
+            (proposal_type = 'general' AND status = 'manager_approved')
+            OR (proposal_type = 'purchase' AND status = 'ic_approved')
+          )`,
+    )
+      .bind(email)
+      .first<{ n: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM proposals
+        WHERE LOWER(engineering_email) = ?1
+          AND proposal_type = 'purchase'
+          AND engineering_required = 1
+          AND status = 'manager_approved'`,
+    )
+      .bind(email)
+      .first<{ n: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM proposals
+        WHERE LOWER(ic_email) = ?1
+          AND proposal_type = 'purchase'
+          AND (
+            (engineering_required = 0 AND status = 'manager_approved')
+            OR (engineering_required = 1 AND status = 'en_approved')
+          )`,
     )
       .bind(email)
       .first<{ n: number }>(),
   ]);
   const pendingManager = pendMgr?.n ?? 0;
   const pendingBod = pendBod?.n ?? 0;
+  const pendingEngineering = pendEn?.n ?? 0;
+  const pendingIc = pendIc?.n ?? 0;
   return c.json({
-    // Hiện tab nếu là TP/BOD trong cấu hình HOẶC còn phiếu chờ duyệt (TP cũ
-    // vừa bị remove vẫn cần thấy phiếu pending đã gán cho họ).
+    // Hiện tab nếu là approver trong cấu hình HOẶC còn phiếu chờ duyệt
+    // (approver cũ vừa bị remove vẫn cần thấy phiếu pending đã gán cho họ).
     isManager: !!mgrRow || pendingManager > 0,
     isBod: !!bodRow || pendingBod > 0,
+    isEngineering: !!enRow || pendingEngineering > 0,
+    isIc: !!icRow || pendingIc > 0,
     pendingManager,
     pendingBod,
+    pendingEngineering,
+    pendingIc,
   });
 });

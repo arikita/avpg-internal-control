@@ -1,14 +1,17 @@
-// Proposal routes — Phase 1 core.
-// State machine: draft → submitted → manager_approved → bod_approved → completed
-//                 \-----------------> rejected (terminal)
+// Proposal routes — Phase 1 + P2.1 (purchase).
+// General: draft → submitted → manager_approved → completed (BOD duyệt)
+// Purchase: draft → submitted → manager_approved → (en_approved nếu cần EN)
+//                  → ic_approved → completed (BOD duyệt)
+//                  rejected/cancelled — terminal.
 
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { badRequest, forbidden, notFound, unprocessable } from '../lib/errors';
 import { nextProposalCode } from '../lib/codes';
-import { getActiveBod, getDeptManager } from '../lib/routing';
+import { getActiveBod, getActiveEngineering, getActiveIc, getDeptManager } from '../lib/routing';
 import { enqueueNotification, type NotificationEvent } from '../lib/notifications';
+import { calcPrTotals, lineTotal } from '../lib/pr-math';
 import { nowIso } from '../lib/time';
 
 export const proposalRoutes = new Hono<AppEnv>();
@@ -19,6 +22,7 @@ type ProposalRow = {
   id: number;
   code: string | null;
   status: string;
+  proposal_type: 'general' | 'purchase';
   proposer_user_id: string;
   proposer_name: string;
   proposer_title: string | null;
@@ -31,6 +35,20 @@ type ProposalRow = {
   manager_name: string | null;
   bod_email: string | null;
   bod_name: string | null;
+  engineering_required: number;
+  engineering_email: string | null;
+  engineering_name: string | null;
+  engineering_acted_at: string | null;
+  ic_email: string | null;
+  ic_name: string | null;
+  ic_acted_at: string | null;
+  delivery_date: string | null;
+  suggested_vendor_1: string | null;
+  suggested_vendor_2: string | null;
+  suggested_vendor_3: string | null;
+  subtotal: number | null;
+  vat_amount: number | null;
+  total_amount: number | null;
   rejected_reason: string | null;
   created_at: string;
   submitted_at: string | null;
@@ -39,7 +57,19 @@ type ProposalRow = {
   completed_at: string | null;
 };
 
-type ItemInput = { seq: number; content: string; note?: string | null };
+type ItemInput = {
+  seq: number;
+  content?: string;
+  note?: string | null;
+  // PR-specific (optional)
+  item_name?: string | null;
+  spec?: string | null;
+  unit?: string | null;
+  qty_stock?: number | null;
+  qty_buy?: number | null;
+  unit_price?: number | null;
+  purpose?: string | null;
+};
 
 // Validate DD/MM/YYYY chuẩn (đúng số ngày trong tháng, năm 1900-2100).
 function isValidDdMmYyyy(s: string): boolean {
@@ -65,22 +95,73 @@ async function loadProposal(c: { env: AppEnv['Bindings'] }, id: number): Promise
 
 async function loadItems(env: AppEnv['Bindings'], proposalId: number) {
   const res = await env.DB.prepare(
-    `SELECT id, seq, content, note FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
+    `SELECT id, seq, content, note,
+            item_name, spec, unit, qty_stock, qty_buy, unit_price, line_total, purpose
+       FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
   )
     .bind(proposalId)
-    .all<{ id: number; seq: number; content: string; note: string | null }>();
+    .all<{
+      id: number;
+      seq: number;
+      content: string | null;
+      note: string | null;
+      item_name: string | null;
+      spec: string | null;
+      unit: string | null;
+      qty_stock: number | null;
+      qty_buy: number | null;
+      unit_price: number | null;
+      line_total: number | null;
+      purpose: string | null;
+    }>();
   return res.results ?? [];
 }
 
-async function replaceItems(env: AppEnv['Bindings'], proposalId: number, items: ItemInput[]) {
-  const stmts = [
+// Branch theo proposal_type: PR lưu cột mua hàng + line_total snapshot, general lưu
+// content/note kiểu Phase 1.
+async function replaceItems(
+  env: AppEnv['Bindings'],
+  proposalId: number,
+  items: ItemInput[],
+  proposalType: 'general' | 'purchase',
+) {
+  const stmts: D1PreparedStatement[] = [
     env.DB.prepare(`DELETE FROM proposal_items WHERE proposal_id = ?1`).bind(proposalId),
-    ...items.map((it) =>
-      env.DB.prepare(
-        `INSERT INTO proposal_items (proposal_id, seq, content, note) VALUES (?1, ?2, ?3, ?4)`,
-      ).bind(proposalId, it.seq, it.content, it.note ?? null),
-    ),
   ];
+  if (proposalType === 'purchase') {
+    for (const it of items) {
+      const qtyBuy = it.qty_buy ?? null;
+      const unitPrice = it.unit_price ?? null;
+      const total =
+        qtyBuy != null && unitPrice != null ? lineTotal({ qty_buy: qtyBuy, unit_price: unitPrice }) : null;
+      stmts.push(
+        env.DB.prepare(
+          `INSERT INTO proposal_items
+             (proposal_id, seq, content, note,
+              item_name, spec, unit, qty_stock, qty_buy, unit_price, line_total, purpose)
+           VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+        ).bind(
+          proposalId,
+          it.seq,
+          it.item_name ?? null,
+          it.spec ?? null,
+          it.unit ?? null,
+          qtyBuy,
+          unitPrice,
+          total,
+          it.purpose ?? null,
+        ),
+      );
+    }
+  } else {
+    for (const it of items) {
+      stmts.push(
+        env.DB.prepare(
+          `INSERT INTO proposal_items (proposal_id, seq, content, note) VALUES (?1, ?2, ?3, ?4)`,
+        ).bind(proposalId, it.seq, it.content ?? '', it.note ?? null),
+      );
+    }
+  }
   await env.DB.batch(stmts);
 }
 
@@ -100,6 +181,25 @@ async function notifyApprover(
   await enqueueNotification(env, { proposalId, channel: 'telegram', event, recipient: email });
 }
 
+// Validate items theo proposal_type. Trả về totals (PR) hoặc null (general).
+function validateAndCalcPr(items: ItemInput[]): { subtotal: number; vat: number; total: number } {
+  if (!items.length) throw badRequest('Phiếu mua hàng phải có ít nhất 1 hạng mục');
+  for (const it of items) {
+    if (!it.item_name || !it.item_name.trim()) {
+      throw badRequest('Mỗi hạng mục phải có Tên hàng');
+    }
+    const q = Number(it.qty_buy ?? 0);
+    const p = Number(it.unit_price ?? 0);
+    if (!Number.isFinite(q) || q <= 0) {
+      throw badRequest(`Số lượng mua phải > 0 (hạng mục "${it.item_name}")`);
+    }
+    if (!Number.isFinite(p) || p <= 0) {
+      throw badRequest(`Đơn giá phải > 0 (hạng mục "${it.item_name}")`);
+    }
+  }
+  return calcPrTotals(items.map((it) => ({ qty_buy: it.qty_buy, unit_price: it.unit_price })));
+}
+
 // ---- POST /api/proposals → create draft ----
 proposalRoutes.post('/', async (c) => {
   const user = c.get('user');
@@ -110,29 +210,60 @@ proposalRoutes.post('/', async (c) => {
     );
   }
   const body = await c.req.json<{
+    proposal_type?: 'general' | 'purchase';
     title?: string;
     reason?: string;
     explanation?: string | null;
     required_time?: string;
     items?: ItemInput[];
+    // PR-specific
+    engineering_required?: boolean | number;
+    delivery_date?: string | null;
+    suggested_vendor_1?: string | null;
+    suggested_vendor_2?: string | null;
+    suggested_vendor_3?: string | null;
   }>();
 
+  const proposalType: 'general' | 'purchase' = body.proposal_type === 'purchase' ? 'purchase' : 'general';
   const title = (body.title ?? '').trim();
   const reason = (body.reason ?? '').trim();
   const required_time = (body.required_time ?? '').trim();
   if (!title) throw badRequest('Thiếu Nội dung đề xuất');
   if (!reason) throw badRequest('Thiếu Lý do đề nghị');
-  if (required_time && !isValidDdMmYyyy(required_time)) {
+  if (proposalType === 'general' && required_time && !isValidDdMmYyyy(required_time)) {
     throw badRequest('Thời gian cần thực hiện phải đúng định dạng DD/MM/YYYY');
+  }
+
+  let subtotal: number | null = null;
+  let vat: number | null = null;
+  let total: number | null = null;
+  let deliveryDate: string | null = null;
+  let engineeringRequired = 0;
+
+  if (proposalType === 'purchase') {
+    deliveryDate = (body.delivery_date ?? '').trim() || null;
+    if (deliveryDate && !isValidDdMmYyyy(deliveryDate)) {
+      throw badRequest('Ngày cần giao phải đúng định dạng DD/MM/YYYY');
+    }
+    engineeringRequired = body.engineering_required ? 1 : 0;
+    const items = body.items ?? [];
+    const totals = validateAndCalcPr(items);
+    subtotal = totals.subtotal;
+    vat = totals.vat;
+    total = totals.total;
   }
 
   const res = await c.env.DB.prepare(
     `INSERT INTO proposals
-       (status, proposer_user_id, proposer_name, proposer_title, proposer_dept,
-        title, reason, explanation, required_time)
-     VALUES ('draft', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+       (status, proposal_type, proposer_user_id, proposer_name, proposer_title, proposer_dept,
+        title, reason, explanation, required_time,
+        engineering_required, delivery_date,
+        suggested_vendor_1, suggested_vendor_2, suggested_vendor_3,
+        subtotal, vat_amount, total_amount)
+     VALUES ('draft', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`,
   )
     .bind(
+      proposalType,
       user.id,
       user.name,
       user.jobTitle ?? null,
@@ -141,10 +272,18 @@ proposalRoutes.post('/', async (c) => {
       reason,
       body.explanation ?? null,
       required_time,
+      engineeringRequired,
+      deliveryDate,
+      proposalType === 'purchase' ? (body.suggested_vendor_1 ?? null) : null,
+      proposalType === 'purchase' ? (body.suggested_vendor_2 ?? null) : null,
+      proposalType === 'purchase' ? (body.suggested_vendor_3 ?? null) : null,
+      subtotal,
+      vat,
+      total,
     )
     .run();
   const proposalId = Number(res.meta.last_row_id);
-  if (body.items?.length) await replaceItems(c.env, proposalId, body.items);
+  if (body.items?.length) await replaceItems(c.env, proposalId, body.items, proposalType);
 
   const row = await loadProposal(c, proposalId);
   return c.json({ proposal: row, items: await loadItems(c.env, proposalId) }, 201);
@@ -153,7 +292,8 @@ proposalRoutes.post('/', async (c) => {
 // ---- GET /api/proposals → list (mine + inbox) ----
 proposalRoutes.get('/', async (c) => {
   const user = c.get('user');
-  const scope = c.req.query('scope') ?? 'mine'; // mine | manager_inbox | bod_inbox
+  const scope = c.req.query('scope') ?? 'mine'; // mine | manager_inbox | bod_inbox | engineering_inbox | ic_inbox
+  const emailLower = user.email.toLowerCase();
   let sql = '';
   let bind: unknown[] = [];
   switch (scope) {
@@ -162,12 +302,42 @@ proposalRoutes.get('/', async (c) => {
       bind = [user.id];
       break;
     case 'manager_inbox':
-      sql = `SELECT * FROM proposals WHERE manager_email = ?1 AND status = 'submitted' ORDER BY submitted_at ASC`;
-      bind = [user.email];
+      // PR: chỉ hiện ở manager_inbox khi chờ TP (status='submitted').
+      sql = `SELECT * FROM proposals WHERE LOWER(manager_email) = ?1 AND status = 'submitted' ORDER BY submitted_at ASC`;
+      bind = [emailLower];
       break;
     case 'bod_inbox':
-      sql = `SELECT * FROM proposals WHERE bod_email = ?1 AND status = 'manager_approved' ORDER BY manager_acted_at ASC`;
-      bind = [user.email];
+      // General: BOD nhận sau manager_approved. PR: BOD nhận sau ic_approved.
+      sql = `SELECT * FROM proposals
+              WHERE LOWER(bod_email) = ?1
+                AND (
+                  (proposal_type = 'general' AND status = 'manager_approved')
+                  OR (proposal_type = 'purchase' AND status = 'ic_approved')
+                )
+              ORDER BY updated_at ASC`;
+      bind = [emailLower];
+      break;
+    case 'engineering_inbox':
+      // PR có engineering_required: EN duyệt ngay sau Manager.
+      sql = `SELECT * FROM proposals
+              WHERE LOWER(engineering_email) = ?1
+                AND proposal_type = 'purchase'
+                AND engineering_required = 1
+                AND status = 'manager_approved'
+              ORDER BY manager_acted_at ASC`;
+      bind = [emailLower];
+      break;
+    case 'ic_inbox':
+      // PR: IC nhận sau Manager (nếu không cần EN) hoặc sau EN.
+      sql = `SELECT * FROM proposals
+              WHERE LOWER(ic_email) = ?1
+                AND proposal_type = 'purchase'
+                AND (
+                  (engineering_required = 0 AND status = 'manager_approved')
+                  OR (engineering_required = 1 AND status = 'en_approved')
+                )
+              ORDER BY updated_at ASC`;
+      bind = [emailLower];
       break;
     default:
       throw badRequest('scope không hợp lệ');
@@ -212,10 +382,49 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
     explanation?: string | null;
     required_time?: string;
     items?: ItemInput[];
+    // PR-specific (proposal_type không sửa được sau khi tạo)
+    engineering_required?: boolean | number;
+    delivery_date?: string | null;
+    suggested_vendor_1?: string | null;
+    suggested_vendor_2?: string | null;
+    suggested_vendor_3?: string | null;
   }>();
 
-  if (body.required_time && body.required_time.trim() && !isValidDdMmYyyy(body.required_time.trim())) {
+  const isPr = row.proposal_type === 'purchase';
+  if (!isPr && body.required_time && body.required_time.trim() && !isValidDdMmYyyy(body.required_time.trim())) {
     throw badRequest('Thời gian cần thực hiện phải đúng định dạng DD/MM/YYYY');
+  }
+
+  let subtotal: number | null = null;
+  let vat: number | null = null;
+  let total: number | null = null;
+  let deliveryDate: string | null | undefined = undefined;
+  let engineeringRequired: number | null | undefined = undefined;
+  let vendor1: string | null | undefined = undefined;
+  let vendor2: string | null | undefined = undefined;
+  let vendor3: string | null | undefined = undefined;
+
+  if (isPr) {
+    if (body.delivery_date !== undefined) {
+      deliveryDate = (body.delivery_date ?? '')?.trim() || null;
+      if (deliveryDate && !isValidDdMmYyyy(deliveryDate)) {
+        throw badRequest('Ngày cần giao phải đúng định dạng DD/MM/YYYY');
+      }
+    }
+    if (body.engineering_required !== undefined) {
+      engineeringRequired = body.engineering_required ? 1 : 0;
+    }
+    if (body.suggested_vendor_1 !== undefined) vendor1 = body.suggested_vendor_1 ?? null;
+    if (body.suggested_vendor_2 !== undefined) vendor2 = body.suggested_vendor_2 ?? null;
+    if (body.suggested_vendor_3 !== undefined) vendor3 = body.suggested_vendor_3 ?? null;
+
+    // Items thay đổi → re-calc totals + snapshot.
+    if (body.items) {
+      const totals = validateAndCalcPr(body.items);
+      subtotal = totals.subtotal;
+      vat = totals.vat;
+      total = totals.total;
+    }
   }
 
   await c.env.DB.prepare(
@@ -224,9 +433,19 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
             reason = COALESCE(?3, reason),
             explanation = COALESCE(?4, explanation),
             required_time = COALESCE(?5, required_time),
+            engineering_required = COALESCE(?6, engineering_required),
+            delivery_date = CASE WHEN ?7 = 1 THEN ?8 ELSE delivery_date END,
+            suggested_vendor_1 = CASE WHEN ?9 = 1 THEN ?10 ELSE suggested_vendor_1 END,
+            suggested_vendor_2 = CASE WHEN ?11 = 1 THEN ?12 ELSE suggested_vendor_2 END,
+            suggested_vendor_3 = CASE WHEN ?13 = 1 THEN ?14 ELSE suggested_vendor_3 END,
+            subtotal = COALESCE(?15, subtotal),
+            vat_amount = COALESCE(?16, vat_amount),
+            total_amount = COALESCE(?17, total_amount),
             status = CASE WHEN status IN ('submitted','rejected') THEN 'draft' ELSE status END,
             rejected_reason = NULL,
             manager_acted_at = NULL,
+            engineering_acted_at = NULL,
+            ic_acted_at = NULL,
             bod_acted_at = NULL,
             updated_at = datetime('now')
       WHERE id = ?1`,
@@ -236,10 +455,22 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
       body.title ?? null,
       body.reason ?? null,
       body.explanation ?? null,
-      body.required_time ?? null,
+      isPr ? null : (body.required_time ?? null),
+      engineeringRequired ?? null,
+      deliveryDate === undefined ? 0 : 1,
+      deliveryDate ?? null,
+      vendor1 === undefined ? 0 : 1,
+      vendor1 ?? null,
+      vendor2 === undefined ? 0 : 1,
+      vendor2 ?? null,
+      vendor3 === undefined ? 0 : 1,
+      vendor3 ?? null,
+      subtotal,
+      vat,
+      total,
     )
     .run();
-  if (body.items) await replaceItems(c.env, id, body.items);
+  if (body.items) await replaceItems(c.env, id, body.items, row.proposal_type);
 
   return c.json({ proposal: await loadProposal(c, id), items: await loadItems(c.env, id) });
 });
@@ -283,22 +514,63 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   assertOwner(row, user.id);
   if (row.status !== 'draft') throw unprocessable('Phiếu đã submit');
 
+  const isPr = row.proposal_type === 'purchase';
+  const needEn = isPr && row.engineering_required === 1;
+
   const manager = await getDeptManager(c.env, row.proposer_dept);
   const bod = await getActiveBod(c.env);
+  const en = needEn ? await getActiveEngineering(c.env) : null;
+  const ic = isPr ? await getActiveIc(c.env) : null;
+
   // Re-submit sau khi sửa (PATCH revert về draft): giữ nguyên code đã sinh trước đó.
-  // Chỉ sinh code mới khi đây là lần submit đầu tiên (code === null).
   const code = row.code ?? (await nextProposalCode(c.env.DB, row.proposer_dept));
   const submittedAt = nowIso();
 
-  // Edge case 6.1: proposer là Manager phòng mình → auto-approve bước Manager.
-  // Edge case 6.2: proposer là BOD → auto-approve bước BOD.
-  // Cả 2 trùng (TP+BOD cùng người, là proposer): chuyển thẳng status='completed'.
-  const proposerIsManager = user.email.toLowerCase() === manager.email.toLowerCase();
-  const proposerIsBod = user.email.toLowerCase() === bod.email.toLowerCase();
+  // Edge cases auto-skip: proposer trùng vai trò nào thì auto-approve bước đó.
+  const u = user.email.toLowerCase();
+  const proposerIsManager = u === manager.email.toLowerCase();
+  const proposerIsEn = en !== null && u === en.email.toLowerCase();
+  const proposerIsIc = ic !== null && u === ic.email.toLowerCase();
+  const proposerIsBod = u === bod.email.toLowerCase();
 
+  // Tính status cuối + approvals cần insert. Chain: submitted → manager_approved →
+  // (en_approved nếu PR+needEn) → (ic_approved nếu PR) → completed.
+  type PrStatus = 'submitted' | 'manager_approved' | 'en_approved' | 'ic_approved' | 'completed';
+  let finalStatus: PrStatus = 'submitted';
   const stmts: D1PreparedStatement[] = [];
-  let finalStatus: 'submitted' | 'manager_approved' | 'completed' = 'submitted';
-  const setFields = [
+
+  const insertApproval = (step: string, email: string, name: string, comment: string) => {
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, ?2, ?3, ?4, 'approve', ?5, 'web')`,
+      ).bind(id, step, email, name, comment),
+    );
+  };
+
+  if (proposerIsManager) {
+    finalStatus = 'manager_approved';
+    insertApproval('manager', manager.email, manager.name, 'Tự duyệt do là Trưởng phòng');
+    if (isPr && needEn && proposerIsEn && en) {
+      finalStatus = 'en_approved';
+      insertApproval('engineering', en.email, en.name, 'Tự duyệt do là EN');
+    }
+    if (isPr && proposerIsIc && ic && (!needEn || finalStatus === 'en_approved')) {
+      finalStatus = 'ic_approved';
+      insertApproval('ic', ic.email, ic.name, 'Tự duyệt do là IC');
+    }
+    // BOD auto-approve chỉ khi general (manager_approved) hoặc PR (ic_approved).
+    const eligibleForBodAuto =
+      (!isPr && finalStatus === 'manager_approved') ||
+      (isPr && finalStatus === 'ic_approved');
+    if (proposerIsBod && eligibleForBodAuto) {
+      finalStatus = 'completed';
+      insertApproval('bod', bod.email, bod.name, 'Tự duyệt do là BGĐ');
+    }
+  }
+
+  // Build SET clause động.
+  const setSql = [
     `code = ?2`,
     `status = ?3`,
     `manager_email = ?4`,
@@ -307,33 +579,22 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
     `bod_name = ?7`,
     `submitted_at = ?8`,
     `updated_at = ?8`,
+    `engineering_email = ?9`,
+    `engineering_name = ?10`,
+    `ic_email = ?11`,
+    `ic_name = ?12`,
   ];
-
-  if (proposerIsManager) {
-    finalStatus = 'manager_approved';
-    setFields.push(`manager_acted_at = ?8`);
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-         VALUES (?1, 'manager', ?2, ?3, 'approve', 'Tự duyệt do là Trưởng phòng', 'web')`,
-      ).bind(id, manager.email, manager.name),
-    );
+  if (finalStatus !== 'submitted') setSql.push(`manager_acted_at = ?8`);
+  if (finalStatus === 'en_approved' || finalStatus === 'ic_approved' || finalStatus === 'completed') {
+    if (isPr && needEn) setSql.push(`engineering_acted_at = ?8`);
   }
-  if (proposerIsBod) {
-    finalStatus = 'completed';
-    setFields.push(`bod_acted_at = ?8`, `completed_at = ?8`);
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-         VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
-      ).bind(id, bod.email, bod.name),
-    );
+  if (finalStatus === 'ic_approved' || finalStatus === 'completed') {
+    if (isPr) setSql.push(`ic_acted_at = ?8`);
   }
+  if (finalStatus === 'completed') setSql.push(`bod_acted_at = ?8`, `completed_at = ?8`);
 
   stmts.unshift(
-    c.env.DB.prepare(
-      `UPDATE proposals SET ${setFields.join(', ')} WHERE id = ?1`,
-    ).bind(
+    c.env.DB.prepare(`UPDATE proposals SET ${setSql.join(', ')} WHERE id = ?1`).bind(
       id,
       code,
       finalStatus,
@@ -342,6 +603,10 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
       bod.email,
       bod.name,
       submittedAt,
+      en?.email ?? null,
+      en?.name ?? null,
+      ic?.email ?? null,
+      ic?.name ?? null,
     ),
   );
   await c.env.DB.batch(stmts);
@@ -350,7 +615,18 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   if (finalStatus === 'submitted') {
     await notifyApprover(c.env, id, 'submitted', manager.email);
   } else if (finalStatus === 'manager_approved') {
-    await notifyApprover(c.env, id, 'manager_approved', bod.email);
+    // PR + needEn → EN; PR no-EN → IC; general → BOD.
+    if (isPr && needEn && en) {
+      await notifyApprover(c.env, id, 'manager_approved', en.email);
+    } else if (isPr && ic) {
+      await notifyApprover(c.env, id, 'manager_approved', ic.email);
+    } else {
+      await notifyApprover(c.env, id, 'manager_approved', bod.email);
+    }
+  } else if (finalStatus === 'en_approved' && ic) {
+    await notifyApprover(c.env, id, 'engineering_approved', ic.email);
+  } else if (finalStatus === 'ic_approved') {
+    await notifyApprover(c.env, id, 'ic_approved', bod.email);
   } else {
     // completed → notify proposer + KSNB group (informational)
     await notifyApprover(c.env, id, 'completed', user.email);
@@ -381,7 +657,11 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
   if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
   if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
 
+  const isPr = row.proposal_type === 'purchase';
+  const needEn = isPr && row.engineering_required === 1;
   const now = nowIso();
+  // Reject thì status='rejected' bất kể type. Approve: general → manager_approved.
+  // PR cũng để 'manager_approved' và phân nhánh notify (EN hoặc IC) sau đó.
   const newStatus = body.action === 'approve' ? 'manager_approved' : 'rejected';
 
   await c.env.DB.batch([
@@ -398,20 +678,205 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
     ).bind(id, user.email, user.name, body.action, body.comment ?? null),
   ]);
 
-  if (body.action === 'approve' && row.bod_email) {
-    // Edge 6.2: nếu proposer chính là BOD → auto-approve bước BOD luôn (completed).
+  if (body.action === 'reject') {
     const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
       .bind(row.proposer_user_id)
       .first<{ email: string }>();
-    const proposerIsBod =
-      proposer?.email && proposer.email.toLowerCase() === row.bod_email.toLowerCase();
+    if (proposer) await notifyApprover(c.env, id, 'rejected', proposer.email);
+    return c.json({ proposal: await loadProposal(c, id) });
+  }
 
-    if (proposerIsBod) {
-      const completedAt = nowIso();
+  // Approve flow — phân nhánh theo proposal_type.
+  if (!isPr) {
+    // General Phase 1: chờ BOD.
+    if (row.bod_email) {
+      const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+        .bind(row.proposer_user_id)
+        .first<{ email: string }>();
+      const proposerIsBod =
+        proposer?.email && proposer.email.toLowerCase() === row.bod_email.toLowerCase();
+      if (proposerIsBod) {
+        const completedAt = nowIso();
+        await c.env.DB.batch([
+          c.env.DB.prepare(
+            `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
+          ).bind(id, completedAt),
+          c.env.DB.prepare(
+            `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+             VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
+          ).bind(id, row.bod_email, row.bod_name),
+        ]);
+        if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
+        if (c.env.KSNB_TELEGRAM_CHAT_ID) {
+          await enqueueNotification(c.env, {
+            proposalId: id,
+            channel: 'telegram',
+            event: 'bod_approved',
+            recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
+          });
+        }
+      } else {
+        await notifyApprover(c.env, id, 'manager_approved', row.bod_email);
+      }
+    }
+    return c.json({ proposal: await loadProposal(c, id) });
+  }
+
+  // PR flow — proposer là EN/IC thì auto-skip step tương ứng.
+  const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+    .bind(row.proposer_user_id)
+    .first<{ email: string }>();
+  const proposerEmail = proposer?.email?.toLowerCase() ?? '';
+
+  // Auto-skip EN nếu proposer = EN (cần check engineering_email vì routing đã snapshot).
+  let curStatus: 'manager_approved' | 'en_approved' | 'ic_approved' | 'completed' = 'manager_approved';
+  const extraStmts: D1PreparedStatement[] = [];
+  const tsNow = now;
+
+  if (needEn) {
+    if (row.engineering_email && proposerEmail === row.engineering_email.toLowerCase()) {
+      curStatus = 'en_approved';
+      extraStmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+           VALUES (?1, 'engineering', ?2, ?3, 'approve', 'Tự duyệt do là EN', 'web')`,
+        ).bind(id, row.engineering_email, row.engineering_name),
+      );
+    }
+  }
+  // Sau (en_approved hoặc manager_approved+noEn): check auto-skip IC.
+  const canSkipIc =
+    (!needEn && curStatus === 'manager_approved') || curStatus === 'en_approved';
+  if (canSkipIc && row.ic_email && proposerEmail === row.ic_email.toLowerCase()) {
+    curStatus = 'ic_approved';
+    extraStmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, 'ic', ?2, ?3, 'approve', 'Tự duyệt do là IC', 'web')`,
+      ).bind(id, row.ic_email, row.ic_name),
+    );
+  }
+  // BOD auto-skip chỉ khi đã đến ic_approved.
+  if (curStatus === 'ic_approved' && row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
+    curStatus = 'completed';
+    extraStmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
+      ).bind(id, row.bod_email, row.bod_name),
+    );
+  }
+
+  if (curStatus !== 'manager_approved') {
+    // Update các timestamp + status.
+    const setSql = ['status = ?2', 'updated_at = ?3'];
+    if (curStatus === 'en_approved' || curStatus === 'ic_approved' || curStatus === 'completed') {
+      if (needEn) setSql.push('engineering_acted_at = ?3');
+    }
+    if (curStatus === 'ic_approved' || curStatus === 'completed') {
+      setSql.push('ic_acted_at = ?3');
+    }
+    if (curStatus === 'completed') setSql.push('bod_acted_at = ?3', 'completed_at = ?3');
+    extraStmts.unshift(
+      c.env.DB.prepare(`UPDATE proposals SET ${setSql.join(', ')} WHERE id = ?1`).bind(
+        id,
+        curStatus,
+        tsNow,
+      ),
+    );
+    await c.env.DB.batch(extraStmts);
+  }
+
+  // Notify bước kế tiếp.
+  if (curStatus === 'manager_approved') {
+    // Chuẩn flow: PR + needEn → EN, no-EN → IC.
+    if (needEn && row.engineering_email) {
+      await notifyApprover(c.env, id, 'manager_approved', row.engineering_email);
+    } else if (row.ic_email) {
+      await notifyApprover(c.env, id, 'manager_approved', row.ic_email);
+    }
+  } else if (curStatus === 'en_approved' && row.ic_email) {
+    await notifyApprover(c.env, id, 'engineering_approved', row.ic_email);
+  } else if (curStatus === 'ic_approved' && row.bod_email) {
+    await notifyApprover(c.env, id, 'ic_approved', row.bod_email);
+  } else if (curStatus === 'completed') {
+    if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
+    if (c.env.KSNB_TELEGRAM_CHAT_ID) {
+      await enqueueNotification(c.env, {
+        proposalId: id,
+        channel: 'telegram',
+        event: 'bod_approved',
+        recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
+      });
+    }
+  }
+
+  return c.json({ proposal: await loadProposal(c, id) });
+});
+
+// ---- POST /api/proposals/:id/engineering-action (PR-only) ----
+proposalRoutes.post('/:id{[0-9]+}/engineering-action', async (c) => {
+  const id = Number(c.req.param('id'));
+  const user = c.get('user');
+  const body = await c.req.json<{ action: 'approve' | 'reject'; comment?: string }>();
+  const row = await loadProposal(c, id);
+
+  if (row.proposal_type !== 'purchase' || row.engineering_required !== 1) {
+    throw unprocessable('Phiếu không cần EN duyệt');
+  }
+  if (row.status !== 'manager_approved') throw unprocessable('Phiếu không ở trạng thái chờ EN duyệt');
+  if (!row.engineering_email || row.engineering_email.toLowerCase() !== user.email.toLowerCase()) {
+    throw forbidden('Bạn không phải EN phụ trách phiếu này');
+  }
+  if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
+  if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
+
+  const now = nowIso();
+  const newStatus = body.action === 'approve' ? 'en_approved' : 'rejected';
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE proposals
+          SET status = ?2, engineering_acted_at = ?3,
+              rejected_reason = CASE WHEN ?2 = 'rejected' THEN ?4 ELSE rejected_reason END,
+              updated_at = ?3
+        WHERE id = ?1`,
+    ).bind(id, newStatus, now, body.comment ?? null),
+    c.env.DB.prepare(
+      `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+       VALUES (?1, 'engineering', ?2, ?3, ?4, ?5, 'web')`,
+    ).bind(id, user.email, user.name, body.action, body.comment ?? null),
+  ]);
+
+  const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+    .bind(row.proposer_user_id)
+    .first<{ email: string }>();
+
+  if (body.action === 'reject') {
+    if (proposer) await notifyApprover(c.env, id, 'rejected', proposer.email);
+    return c.json({ proposal: await loadProposal(c, id) });
+  }
+
+  // Approve → chờ IC. Auto-skip IC nếu proposer là IC.
+  const proposerEmail = proposer?.email?.toLowerCase() ?? '';
+  if (row.ic_email && proposerEmail === row.ic_email.toLowerCase()) {
+    // Skip IC → status='ic_approved'.
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE proposals SET status = 'ic_approved', ic_acted_at = ?2, updated_at = ?2 WHERE id = ?1`,
+      ).bind(id, now),
+      c.env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, 'ic', ?2, ?3, 'approve', 'Tự duyệt do là IC', 'web')`,
+      ).bind(id, row.ic_email, row.ic_name),
+    ]);
+    // Sau ic_approved: tiếp tục check BOD auto-skip.
+    if (row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
+      const tsBod = nowIso();
       await c.env.DB.batch([
         c.env.DB.prepare(
           `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
-        ).bind(id, completedAt),
+        ).bind(id, tsBod),
         c.env.DB.prepare(
           `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
            VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
@@ -426,14 +891,82 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
           recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
         });
       }
-    } else {
-      await notifyApprover(c.env, id, 'manager_approved', row.bod_email);
+    } else if (row.bod_email) {
+      await notifyApprover(c.env, id, 'ic_approved', row.bod_email);
     }
-  } else if (body.action === 'reject') {
-    const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
-      .bind(row.proposer_user_id)
-      .first<{ email: string }>();
+  } else if (row.ic_email) {
+    await notifyApprover(c.env, id, 'engineering_approved', row.ic_email);
+  }
+
+  return c.json({ proposal: await loadProposal(c, id) });
+});
+
+// ---- POST /api/proposals/:id/ic-action (PR-only) ----
+proposalRoutes.post('/:id{[0-9]+}/ic-action', async (c) => {
+  const id = Number(c.req.param('id'));
+  const user = c.get('user');
+  const body = await c.req.json<{ action: 'approve' | 'reject'; comment?: string }>();
+  const row = await loadProposal(c, id);
+
+  if (row.proposal_type !== 'purchase') throw unprocessable('Phiếu không phải mua hàng');
+  const expectedStatus = row.engineering_required === 1 ? 'en_approved' : 'manager_approved';
+  if (row.status !== expectedStatus) throw unprocessable('Phiếu không ở trạng thái chờ IC duyệt');
+  if (!row.ic_email || row.ic_email.toLowerCase() !== user.email.toLowerCase()) {
+    throw forbidden('Bạn không phải IC phụ trách phiếu này');
+  }
+  if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
+  if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
+
+  const now = nowIso();
+  const newStatus = body.action === 'approve' ? 'ic_approved' : 'rejected';
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE proposals
+          SET status = ?2, ic_acted_at = ?3,
+              rejected_reason = CASE WHEN ?2 = 'rejected' THEN ?4 ELSE rejected_reason END,
+              updated_at = ?3
+        WHERE id = ?1`,
+    ).bind(id, newStatus, now, body.comment ?? null),
+    c.env.DB.prepare(
+      `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+       VALUES (?1, 'ic', ?2, ?3, ?4, ?5, 'web')`,
+    ).bind(id, user.email, user.name, body.action, body.comment ?? null),
+  ]);
+
+  const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+    .bind(row.proposer_user_id)
+    .first<{ email: string }>();
+
+  if (body.action === 'reject') {
     if (proposer) await notifyApprover(c.env, id, 'rejected', proposer.email);
+    return c.json({ proposal: await loadProposal(c, id) });
+  }
+
+  // Approve → chờ BOD. Auto-skip BOD nếu proposer là BOD.
+  const proposerEmail = proposer?.email?.toLowerCase() ?? '';
+  if (row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
+    const tsBod = nowIso();
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
+      ).bind(id, tsBod),
+      c.env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
+      ).bind(id, row.bod_email, row.bod_name),
+    ]);
+    if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
+    if (c.env.KSNB_TELEGRAM_CHAT_ID) {
+      await enqueueNotification(c.env, {
+        proposalId: id,
+        channel: 'telegram',
+        event: 'bod_approved',
+        recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
+      });
+    }
+  } else if (row.bod_email) {
+    await notifyApprover(c.env, id, 'ic_approved', row.bod_email);
   }
 
   return c.json({ proposal: await loadProposal(c, id) });
@@ -446,7 +979,9 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
   const body = await c.req.json<{ action: 'approve' | 'reject'; comment?: string }>();
   const row = await loadProposal(c, id);
 
-  if (row.status !== 'manager_approved')
+  // General: chờ BGĐ ở status='manager_approved'. PR: ở 'ic_approved'.
+  const expectedStatus = row.proposal_type === 'purchase' ? 'ic_approved' : 'manager_approved';
+  if (row.status !== expectedStatus)
     throw unprocessable('Phiếu không ở trạng thái chờ BGĐ duyệt');
   if (!row.bod_email || row.bod_email.toLowerCase() !== user.email.toLowerCase()) {
     throw forbidden('Bạn không phải BGĐ phụ trách phiếu này');

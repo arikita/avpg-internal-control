@@ -11,6 +11,8 @@ import { sendMessage } from './telegram';
 export type NotificationEvent =
   | 'submitted'
   | 'manager_approved'
+  | 'engineering_approved'
+  | 'ic_approved'
   | 'bod_approved'
   | 'completed'
   | 'rejected';
@@ -100,7 +102,11 @@ export async function runNotificationQueue(env: Bindings): Promise<QueueResult> 
           if (u?.telegram_chat_id) {
             chatId = u.telegram_chat_id;
             // Chỉ enable approve/reject button cho event đang chờ recipient duyệt.
-            withButtons = n.event === 'submitted' || n.event === 'manager_approved';
+            withButtons =
+              n.event === 'submitted' ||
+              n.event === 'manager_approved' ||
+              n.event === 'engineering_approved' ||
+              n.event === 'ic_approved';
           }
         } else {
           chatId = n.recipient;

@@ -111,13 +111,19 @@ export function landingPage(user: SessionUser | null) {
 export type DashboardRoleInfo = {
   isManager: boolean;
   isBod: boolean;
+  isEngineering: boolean;
+  isIc: boolean;
   pendingManager: number;
   pendingBod: number;
+  pendingEngineering: number;
+  pendingIc: number;
 };
 
 export function appPage(user: SessionUser, role: DashboardRoleInfo) {
   // Inline literals — chỉ bool/number, không cần escape JSON.
-  const args = `${role.isManager}, ${role.isBod}, ${role.pendingManager}, ${role.pendingBod}`;
+  const args =
+    `${role.isManager}, ${role.isBod}, ${role.isEngineering}, ${role.isIc}, ` +
+    `${role.pendingManager}, ${role.pendingBod}, ${role.pendingEngineering}, ${role.pendingIc}`;
   const body = html`
     <div x-data="dashboard(${args})" x-init="load()" class="space-y-5">
       <div class="flex justify-between items-center">
@@ -263,12 +269,13 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
     </div>
 
     <script>
-      function dashboard(isManager, isBod, pendingManager, pendingBod) {
+      function dashboard(isManager, isBod, isEngineering, isIc, pendingManager, pendingBod, pendingEngineering, pendingIc) {
         return {
           tab: 'mine',
           loading: false,
           proposals: [],
-          isManager, isBod, pendingManager, pendingBod,
+          isManager, isBod, isEngineering, isIc,
+          pendingManager, pendingBod, pendingEngineering, pendingIc,
           tabs: [],
           // settings modal
           settingsModal: false,
@@ -285,6 +292,12 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             const arr = [{ key: 'mine', label: 'Phiếu của tôi', count: 0 }];
             if (this.isManager) {
               arr.push({ key: 'manager_inbox', label: 'Tôi cần duyệt (TP)', count: this.pendingManager });
+            }
+            if (this.isEngineering) {
+              arr.push({ key: 'engineering_inbox', label: 'Tôi cần duyệt (EN)', count: this.pendingEngineering });
+            }
+            if (this.isIc) {
+              arr.push({ key: 'ic_inbox', label: 'Tôi cần duyệt (IC)', count: this.pendingIc });
             }
             if (this.isBod) {
               arr.push({ key: 'bod_inbox', label: 'Tôi cần duyệt (BGĐ)', count: this.pendingBod });
@@ -303,8 +316,12 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
               this.telegramLinked = !!tg.linked;
               this.isManager = !!counts.isManager;
               this.isBod = !!counts.isBod;
+              this.isEngineering = !!counts.isEngineering;
+              this.isIc = !!counts.isIc;
               this.pendingManager = counts.pendingManager || 0;
               this.pendingBod = counts.pendingBod || 0;
+              this.pendingEngineering = counts.pendingEngineering || 0;
+              this.pendingIc = counts.pendingIc || 0;
               this.rebuildTabs();
             } catch (e) {
               alert('Lỗi tải dữ liệu: ' + e.message);
@@ -381,10 +398,14 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             return pad(d.getDate()) + '/' + pad(d.getMonth()+1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
           },
           badge(status) {
+            // manager_approved label hiển thị chung "Chờ bước kế tiếp" vì
+            // PR + general phân nhánh khác nhau sau bước này.
             const map = {
               draft:            ['Nháp',          'bg-slate-100 text-slate-700 ring-slate-200'],
               submitted:        ['Chờ TP duyệt',  'bg-amber-100 text-amber-800 ring-amber-200'],
-              manager_approved: ['Chờ BGĐ duyệt', 'bg-blue-100 text-blue-800 ring-blue-200'],
+              manager_approved: ['Đã qua TP',     'bg-blue-100 text-blue-800 ring-blue-200'],
+              en_approved:      ['Đã qua EN',     'bg-indigo-100 text-indigo-800 ring-indigo-200'],
+              ic_approved:      ['Chờ BGĐ duyệt', 'bg-violet-100 text-violet-800 ring-violet-200'],
               completed:        ['Đã duyệt',      'bg-emerald-100 text-emerald-800 ring-emerald-200'],
               rejected:         ['Từ chối',       'bg-rose-100 text-rose-800 ring-rose-200'],
               cancelled:        ['Đã huỷ',        'bg-slate-200 text-slate-600 ring-slate-300'],
@@ -400,8 +421,9 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
 }
 
 // ---------- Proposal form (new + edit dùng chung) ----------
-type ExistingProposal = {
+export type ExistingProposalGeneral = {
   id: number;
+  proposal_type: 'general';
   title: string;
   reason: string;
   explanation: string | null;
@@ -409,30 +431,123 @@ type ExistingProposal = {
   items: Array<{ content: string; note: string | null }>;
 };
 
+export type ExistingProposalPurchase = {
+  id: number;
+  proposal_type: 'purchase';
+  title: string;
+  reason: string;
+  explanation: string | null;
+  engineering_required: number;
+  delivery_date: string | null;
+  suggested_vendor_1: string | null;
+  suggested_vendor_2: string | null;
+  suggested_vendor_3: string | null;
+  items: Array<{
+    item_name: string | null;
+    spec: string | null;
+    unit: string | null;
+    qty_stock: number | null;
+    qty_buy: number | null;
+    unit_price: number | null;
+    purpose: string | null;
+  }>;
+};
+
+export type ExistingProposal = ExistingProposalGeneral | ExistingProposalPurchase;
+
 export function proposalFormPage(user: SessionUser, existing?: ExistingProposal) {
   const isEdit = !!existing;
   const title = isEdit ? `Sửa phiếu #${existing.id}` : 'Tạo phiếu đề xuất mới';
-  const initJson = JSON.stringify(
-    existing
-      ? {
-          title: existing.title,
-          reason: existing.reason,
-          explanation: existing.explanation ?? '',
-          required_time: existing.required_time,
-          items:
-            existing.items.length > 0
-              ? existing.items.map((it) => ({ content: it.content, note: it.note ?? '' }))
-              : [{ content: '', note: '' }],
-        }
-      : null,
-  );
   const cancelHref = isEdit ? `/p/${existing.id}` : '/app';
+
+  // initial state cho Alpine. Mỗi type có shape riêng.
+  let initialState: Record<string, unknown>;
+  if (existing && existing.proposal_type === 'purchase') {
+    initialState = {
+      proposal_type: 'purchase',
+      title: existing.title,
+      reason: existing.reason,
+      explanation: existing.explanation ?? '',
+      delivery_date: existing.delivery_date ?? '',
+      engineering_required: existing.engineering_required === 1,
+      suggested_vendor_1: existing.suggested_vendor_1 ?? '',
+      suggested_vendor_2: existing.suggested_vendor_2 ?? '',
+      suggested_vendor_3: existing.suggested_vendor_3 ?? '',
+      pr_items:
+        existing.items.length > 0
+          ? existing.items.map((it) => ({
+              item_name: it.item_name ?? '',
+              spec: it.spec ?? '',
+              unit: it.unit ?? '',
+              qty_stock: it.qty_stock ?? 0,
+              qty_buy: it.qty_buy ?? 0,
+              unit_price: it.unit_price ?? 0,
+              purpose: it.purpose ?? '',
+            }))
+          : [
+              {
+                item_name: '',
+                spec: '',
+                unit: '',
+                qty_stock: 0,
+                qty_buy: 0,
+                unit_price: 0,
+                purpose: '',
+              },
+            ],
+      items: [{ content: '', note: '' }],
+      required_time: '',
+    };
+  } else if (existing) {
+    initialState = {
+      proposal_type: 'general',
+      title: existing.title,
+      reason: existing.reason,
+      explanation: existing.explanation ?? '',
+      required_time: existing.required_time,
+      items:
+        existing.items.length > 0
+          ? existing.items.map((it) => ({ content: it.content, note: it.note ?? '' }))
+          : [{ content: '', note: '' }],
+      pr_items: [
+        { item_name: '', spec: '', unit: '', qty_stock: 0, qty_buy: 0, unit_price: 0, purpose: '' },
+      ],
+      delivery_date: '',
+      engineering_required: false,
+      suggested_vendor_1: '',
+      suggested_vendor_2: '',
+      suggested_vendor_3: '',
+    };
+  } else {
+    initialState = null as unknown as Record<string, unknown>;
+  }
+  const initJson = JSON.stringify(initialState);
 
   const body = html`
     <div x-data="proposalForm(${initJson}, ${isEdit ? `'${existing.id}'` : 'null'})" class="max-w-3xl mx-auto">
       <h1 class="text-xl font-semibold mb-4">${title}</h1>
 
       <form @submit.prevent="submit()" class="bg-white rounded-lg border border-slate-200 p-6 space-y-5">
+        ${isEdit
+          ? ''
+          : html`
+              <div>
+                <label class="block text-sm font-medium text-slate-700 mb-2">Loại phiếu</label>
+                <div class="flex gap-3">
+                  <label class="flex-1 flex items-center gap-2 px-3 py-2 border rounded cursor-pointer"
+                    :class="form.proposal_type==='general' ? 'border-blue-700 bg-blue-50' : 'border-slate-300'">
+                    <input type="radio" value="general" x-model="form.proposal_type" />
+                    <span class="text-sm font-medium">Đề xuất chung</span>
+                  </label>
+                  <label class="flex-1 flex items-center gap-2 px-3 py-2 border rounded cursor-pointer"
+                    :class="form.proposal_type==='purchase' ? 'border-blue-700 bg-blue-50' : 'border-slate-300'">
+                    <input type="radio" value="purchase" x-model="form.proposal_type" />
+                    <span class="text-sm font-medium">🛒 Đề xuất mua hàng</span>
+                  </label>
+                </div>
+              </div>
+            `}
+
         <div class="grid grid-cols-2 gap-4 text-sm">
           <div>
             <label class="block text-slate-600 mb-1">Người đề nghị</label>
@@ -462,46 +577,144 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
             class="w-full px-3 py-2 border border-slate-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"></textarea>
         </div>
 
-        <div>
-          <label class="block text-sm font-medium text-slate-700 mb-1">
-            Thời gian cần thực hiện
-            <span class="text-slate-400 font-normal text-xs">(không bắt buộc, định dạng DD/MM/YYYY)</span>
-          </label>
-          <input x-model="form.required_time" type="text" placeholder="VD: 15/06/2026"
-            inputmode="numeric" maxlength="10"
-            :class="requiredTimeError ? 'border-rose-500 focus:ring-rose-500 focus:border-rose-500' : 'border-slate-300 focus:ring-blue-500 focus:border-blue-500'"
-            class="w-full px-3 py-2 border rounded focus:ring-2 outline-none" />
-          <p x-show="requiredTimeError" class="text-xs text-rose-600 mt-1" x-text="requiredTimeError"></p>
+        <!-- GENERAL form -->
+        <div x-show="form.proposal_type==='general'" class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1">
+              Thời gian cần thực hiện
+              <span class="text-slate-400 font-normal text-xs">(không bắt buộc, định dạng DD/MM/YYYY)</span>
+            </label>
+            <input x-model="form.required_time" type="text" placeholder="VD: 15/06/2026"
+              inputmode="numeric" maxlength="10"
+              :class="requiredTimeError ? 'border-rose-500 focus:ring-rose-500 focus:border-rose-500' : 'border-slate-300 focus:ring-blue-500 focus:border-blue-500'"
+              class="w-full px-3 py-2 border rounded focus:ring-2 outline-none" />
+            <p x-show="requiredTimeError" class="text-xs text-rose-600 mt-1" x-text="requiredTimeError"></p>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-sm font-medium text-slate-700">Danh sách hạng mục</label>
+              <button type="button" @click="addItem()" class="text-blue-900 hover:text-blue-700 text-sm">+ Thêm dòng</button>
+            </div>
+            <div class="overflow-hidden border border-slate-200 rounded">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th class="text-left px-3 py-2 w-12">STT</th>
+                    <th class="text-left px-3 py-2">Nội dung</th>
+                    <th class="text-left px-3 py-2">Ghi chú</th>
+                    <th class="w-10"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="(it, i) in form.items" :key="i">
+                    <tr class="border-t border-slate-100">
+                      <td class="px-3 py-2 text-center" x-text="String(i+1).padStart(2,'0')"></td>
+                      <td class="px-2 py-1"><input x-model="it.content" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
+                      <td class="px-2 py-1"><input x-model="it.note" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
+                      <td class="px-2 py-1 text-center">
+                        <button type="button" @click="form.items.splice(i,1)" class="text-rose-500 hover:text-rose-700">✕</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
-        <div>
-          <div class="flex items-center justify-between mb-2">
-            <label class="text-sm font-medium text-slate-700">Danh sách hạng mục</label>
-            <button type="button" @click="addItem()" class="text-blue-900 hover:text-blue-700 text-sm">+ Thêm dòng</button>
+        <!-- PURCHASE form -->
+        <div x-show="form.proposal_type==='purchase'" class="space-y-5">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium text-slate-700 mb-1">
+                Ngày cần giao
+                <span class="text-slate-400 font-normal text-xs">(tuỳ chọn — DD/MM/YYYY)</span>
+              </label>
+              <input x-model="form.delivery_date" type="text" placeholder="VD: 30/06/2026"
+                inputmode="numeric" maxlength="10"
+                :class="deliveryDateError ? 'border-rose-500 focus:ring-rose-500 focus:border-rose-500' : 'border-slate-300 focus:ring-blue-500 focus:border-blue-500'"
+                class="w-full px-3 py-2 border rounded focus:ring-2 outline-none" />
+              <p x-show="deliveryDateError" class="text-xs text-rose-600 mt-1" x-text="deliveryDateError"></p>
+            </div>
+            <div class="flex items-end">
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" x-model="form.engineering_required" class="w-4 h-4" />
+                <span>Cần phòng EN (kỹ thuật) xem xét spec</span>
+              </label>
+            </div>
           </div>
-          <div class="overflow-hidden border border-slate-200 rounded">
-            <table class="w-full text-sm">
-              <thead class="bg-slate-50 text-slate-600">
-                <tr>
-                  <th class="text-left px-3 py-2 w-12">STT</th>
-                  <th class="text-left px-3 py-2">Nội dung</th>
-                  <th class="text-left px-3 py-2">Ghi chú</th>
-                  <th class="w-10"></th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="(it, i) in form.items" :key="i">
-                  <tr class="border-t border-slate-100">
-                    <td class="px-3 py-2 text-center" x-text="String(i+1).padStart(2,'0')"></td>
-                    <td class="px-2 py-1"><input x-model="it.content" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
-                    <td class="px-2 py-1"><input x-model="it.note" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
-                    <td class="px-2 py-1 text-center">
-                      <button type="button" @click="form.items.splice(i,1)" class="text-rose-500 hover:text-rose-700">✕</button>
-                    </td>
+
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-sm font-medium text-slate-700">Danh sách hàng mua</label>
+              <button type="button" @click="addPrItem()" class="text-blue-900 hover:text-blue-700 text-sm">+ Thêm dòng</button>
+            </div>
+            <div class="overflow-x-auto border border-slate-200 rounded">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th class="text-left px-2 py-2 w-10">STT</th>
+                    <th class="text-left px-2 py-2 min-w-[160px]">Tên hàng *</th>
+                    <th class="text-left px-2 py-2 min-w-[120px]">Spec</th>
+                    <th class="text-left px-2 py-2 w-20">ĐVT</th>
+                    <th class="text-left px-2 py-2 w-20">SL tồn</th>
+                    <th class="text-left px-2 py-2 w-20">SL mua *</th>
+                    <th class="text-left px-2 py-2 w-28">Đơn giá *</th>
+                    <th class="text-right px-2 py-2 w-32">Thành tiền</th>
+                    <th class="text-left px-2 py-2 min-w-[140px]">Mục đích</th>
+                    <th class="w-8"></th>
                   </tr>
-                </template>
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  <template x-for="(it, i) in form.pr_items" :key="i">
+                    <tr class="border-t border-slate-100">
+                      <td class="px-2 py-1 text-center" x-text="String(i+1).padStart(2,'0')"></td>
+                      <td class="px-1 py-1"><input x-model="it.item_name" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
+                      <td class="px-1 py-1"><input x-model="it.spec" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
+                      <td class="px-1 py-1"><input x-model="it.unit" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
+                      <td class="px-1 py-1"><input x-model.number="it.qty_stock" type="number" min="0" class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
+                      <td class="px-1 py-1"><input x-model.number="it.qty_buy" type="number" min="0" class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
+                      <td class="px-1 py-1"><input x-model.number="it.unit_price" type="number" min="0" step="1000" class="w-full px-2 py-1 border border-slate-200 rounded text-right" /></td>
+                      <td class="px-2 py-1 text-right font-medium text-slate-700" x-text="fmtVnd((+it.qty_buy||0) * (+it.unit_price||0))"></td>
+                      <td class="px-1 py-1"><input x-model="it.purpose" class="w-full px-2 py-1 border border-slate-200 rounded" /></td>
+                      <td class="px-1 py-1 text-center">
+                        <button type="button" @click="form.pr_items.splice(i,1)" class="text-rose-500 hover:text-rose-700">✕</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+                <tfoot class="bg-slate-50">
+                  <tr><td colspan="7" class="px-2 py-1.5 text-right text-slate-600">Cộng tiền hàng</td>
+                    <td class="px-2 py-1.5 text-right font-medium" x-text="fmtVnd(prTotals.subtotal) + ' VND'"></td>
+                    <td colspan="2"></td></tr>
+                  <tr><td colspan="7" class="px-2 py-1.5 text-right text-slate-600">VAT 10%</td>
+                    <td class="px-2 py-1.5 text-right font-medium" x-text="fmtVnd(prTotals.vat) + ' VND'"></td>
+                    <td colspan="2"></td></tr>
+                  <tr class="border-t border-slate-200"><td colspan="7" class="px-2 py-1.5 text-right font-semibold">Tổng cộng (đã VAT)</td>
+                    <td class="px-2 py-1.5 text-right font-bold text-blue-900" x-text="fmtVnd(prTotals.total) + ' VND'"></td>
+                    <td colspan="2"></td></tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <div x-show="prTotals.total >= 5000000" x-cloak
+              class="mt-3 bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-800">
+              ⚠️ <b>Hàng ≥ 5tr</b>: theo QD1 Điều 8, BẮT BUỘC kèm 3 báo giá từ 3 NCC khác nhau.
+              Phiên bản P2.1 chỉ cảnh báo — P2.3 sẽ thêm chức năng upload file báo giá.
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-2">Nhà cung cấp đề nghị (tối đa 3)</label>
+            <div class="space-y-2">
+              <textarea x-model="form.suggested_vendor_1" rows="2" placeholder="NCC 1: tên — sđt — người liên hệ"
+                class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
+              <textarea x-model="form.suggested_vendor_2" rows="2" placeholder="NCC 2 (tuỳ chọn)"
+                class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
+              <textarea x-model="form.suggested_vendor_3" rows="2" placeholder="NCC 3 (tuỳ chọn)"
+                class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
+            </div>
           </div>
         </div>
 
@@ -527,12 +740,24 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
           busy: false,
           editId: editId,
           form: initial || {
+            proposal_type: 'general',
             title: '', reason: '', explanation: '', required_time: '',
             items: [{ content: '', note: '' }],
+            // PR
+            delivery_date: '',
+            engineering_required: false,
+            suggested_vendor_1: '',
+            suggested_vendor_2: '',
+            suggested_vendor_3: '',
+            pr_items: [{ item_name: '', spec: '', unit: '', qty_stock: 0, qty_buy: 0, unit_price: 0, purpose: '' }],
+          },
+          fmtVnd(n) {
+            if (n == null || isNaN(+n)) return '0';
+            return (+n).toLocaleString('vi-VN');
           },
           get requiredTimeError() {
             const s = (this.form.required_time || '').trim();
-            if (!s) return ''; // optional, để trống OK
+            if (!s) return '';
             const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
             if (!m) return 'Định dạng phải là DD/MM/YYYY (VD: 15/06/2026)';
             const d = +m[1], mo = +m[2], y = +m[3];
@@ -542,20 +767,80 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
             if (d < 1 || d > dim) return 'Ngày không hợp lệ trong tháng ' + mo;
             return '';
           },
+          get deliveryDateError() {
+            const s = (this.form.delivery_date || '').trim();
+            if (!s) return '';
+            const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            if (!m) return 'Định dạng phải là DD/MM/YYYY';
+            const d = +m[1], mo = +m[2], y = +m[3];
+            if (y < 1900 || y > 2100) return 'Năm phải trong khoảng 1900–2100';
+            if (mo < 1 || mo > 12) return 'Tháng không hợp lệ';
+            const dim = new Date(y, mo, 0).getDate();
+            if (d < 1 || d > dim) return 'Ngày không hợp lệ trong tháng ' + mo;
+            return '';
+          },
+          get prTotals() {
+            const subtotal = (this.form.pr_items || []).reduce((s, it) => {
+              const q = +it.qty_buy || 0, p = +it.unit_price || 0;
+              return s + Math.round(q * p);
+            }, 0);
+            const vat = Math.round(subtotal * 0.1);
+            return { subtotal, vat, total: subtotal + vat };
+          },
           addItem() { this.form.items.push({ content: '', note: '' }); },
+          addPrItem() {
+            this.form.pr_items.push({ item_name: '', spec: '', unit: '', qty_stock: 0, qty_buy: 0, unit_price: 0, purpose: '' });
+          },
           payload() {
-            return {
+            const base = {
+              proposal_type: this.form.proposal_type,
               title: this.form.title,
               reason: this.form.reason,
               explanation: this.form.explanation || null,
+            };
+            if (this.form.proposal_type === 'purchase') {
+              return Object.assign(base, {
+                delivery_date: (this.form.delivery_date || '').trim() || null,
+                engineering_required: !!this.form.engineering_required,
+                suggested_vendor_1: (this.form.suggested_vendor_1 || '').trim() || null,
+                suggested_vendor_2: (this.form.suggested_vendor_2 || '').trim() || null,
+                suggested_vendor_3: (this.form.suggested_vendor_3 || '').trim() || null,
+                items: this.form.pr_items
+                  .filter(it => (it.item_name || '').trim())
+                  .map((it, idx) => ({
+                    seq: idx + 1,
+                    item_name: (it.item_name || '').trim(),
+                    spec: (it.spec || '').trim() || null,
+                    unit: (it.unit || '').trim() || null,
+                    qty_stock: +it.qty_stock || 0,
+                    qty_buy: +it.qty_buy || 0,
+                    unit_price: +it.unit_price || 0,
+                    purpose: (it.purpose || '').trim() || null,
+                  })),
+              });
+            }
+            return Object.assign(base, {
               required_time: (this.form.required_time || '').trim() || null,
               items: this.form.items
                 .filter(it => (it.content || '').trim())
                 .map((it, idx) => ({ seq: idx + 1, content: it.content.trim(), note: (it.note || '').trim() || null })),
-            };
+            });
           },
           async save(thenSubmit) {
-            if (this.requiredTimeError) { alert(this.requiredTimeError); return; }
+            if (this.form.proposal_type === 'general' && this.requiredTimeError) {
+              alert(this.requiredTimeError); return;
+            }
+            if (this.form.proposal_type === 'purchase' && this.deliveryDateError) {
+              alert(this.deliveryDateError); return;
+            }
+            if (this.form.proposal_type === 'purchase') {
+              const valid = (this.form.pr_items || []).filter(it => (it.item_name || '').trim());
+              if (!valid.length) { alert('Phiếu mua hàng phải có ít nhất 1 hạng mục với Tên hàng'); return; }
+              for (const it of valid) {
+                if (!(+it.qty_buy > 0)) { alert('Hạng mục "' + it.item_name + '": SL mua phải > 0'); return; }
+                if (!(+it.unit_price > 0)) { alert('Hạng mục "' + it.item_name + '": Đơn giá phải > 0'); return; }
+              }
+            }
             this.busy = true;
             try {
               let id;
@@ -609,41 +894,105 @@ export function proposalDetailPage(
   approvals: Array<Record<string, unknown>>,
 ) {
   const isOwner = proposal.proposer_user_id === user.id;
-  const isManagerOf = proposal.manager_email && (proposal.manager_email as string).toLowerCase() === user.email.toLowerCase();
-  const isBodOf = proposal.bod_email && (proposal.bod_email as string).toLowerCase() === user.email.toLowerCase();
+  const userEmailLower = user.email.toLowerCase();
+  const isManagerOf =
+    proposal.manager_email && (proposal.manager_email as string).toLowerCase() === userEmailLower;
+  const isEnOf =
+    proposal.engineering_email &&
+    (proposal.engineering_email as string).toLowerCase() === userEmailLower;
+  const isIcOf =
+    proposal.ic_email && (proposal.ic_email as string).toLowerCase() === userEmailLower;
+  const isBodOf =
+    proposal.bod_email && (proposal.bod_email as string).toLowerCase() === userEmailLower;
   const status = proposal.status as string;
+  const proposalType = ((proposal.proposal_type as string) ?? 'general') as 'general' | 'purchase';
+  const isPr = proposalType === 'purchase';
+  const needEn = isPr && Number(proposal.engineering_required ?? 0) === 1;
 
   const canSubmit = isOwner && status === 'draft';
-  // Sửa: cho phép khi phiếu chưa có phê duyệt (draft/submitted) hoặc bị từ chối.
   const canEdit = isOwner && ['draft', 'submitted', 'rejected'].includes(status);
-  // Huỷ: chỉ khi chưa có phê duyệt nào (draft hoặc submitted).
   const canCancel = isOwner && ['draft', 'submitted'].includes(status);
   const canManagerAct = isManagerOf && status === 'submitted';
-  const canBodAct = isBodOf && status === 'manager_approved';
+  const canEngineeringAct = isPr && needEn && isEnOf && status === 'manager_approved';
+  const canIcAct =
+    isPr &&
+    isIcOf &&
+    ((!needEn && status === 'manager_approved') || (needEn && status === 'en_approved'));
+  // BOD: general chờ ở manager_approved, PR chờ ở ic_approved.
+  const canBodAct = isBodOf && ((!isPr && status === 'manager_approved') || (isPr && status === 'ic_approved'));
+
+  const fmtVnd = (n: unknown): string => {
+    if (n == null || isNaN(Number(n))) return '0';
+    return Number(n).toLocaleString('vi-VN');
+  };
 
   const itemsHtml = items.length
-    ? html`
-        <table class="w-full text-sm">
-          <thead class="bg-slate-50 text-slate-600">
-            <tr>
-              <th class="text-left px-3 py-2 w-12">STT</th>
-              <th class="text-left px-3 py-2">Nội dung</th>
-              <th class="text-left px-3 py-2">Ghi chú</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${items.map(
-              (it, i) => html`
-                <tr class="border-t border-slate-100">
-                  <td class="px-3 py-2 text-center">${String(i + 1).padStart(2, '0')}</td>
-                  <td class="px-3 py-2">${it.content as string}</td>
-                  <td class="px-3 py-2 text-slate-500">${(it.note as string) ?? ''}</td>
-                </tr>
-              `,
-            )}
-          </tbody>
-        </table>
-      `
+    ? isPr
+      ? html`
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-slate-600">
+              <tr>
+                <th class="text-left px-2 py-2 w-10">STT</th>
+                <th class="text-left px-2 py-2">Tên hàng</th>
+                <th class="text-left px-2 py-2">Spec</th>
+                <th class="text-center px-2 py-2 w-16">ĐVT</th>
+                <th class="text-right px-2 py-2 w-16">SL mua</th>
+                <th class="text-right px-2 py-2 w-28">Đơn giá</th>
+                <th class="text-right px-2 py-2 w-32">Thành tiền</th>
+                <th class="text-left px-2 py-2">Mục đích</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(
+                (it, i) => html`
+                  <tr class="border-t border-slate-100">
+                    <td class="px-2 py-2 text-center">${String(i + 1).padStart(2, '0')}</td>
+                    <td class="px-2 py-2">${(it.item_name as string) ?? ''}</td>
+                    <td class="px-2 py-2 text-slate-500">${(it.spec as string) ?? ''}</td>
+                    <td class="px-2 py-2 text-center">${(it.unit as string) ?? ''}</td>
+                    <td class="px-2 py-2 text-right">${fmtVnd(it.qty_buy)}</td>
+                    <td class="px-2 py-2 text-right">${fmtVnd(it.unit_price)}</td>
+                    <td class="px-2 py-2 text-right font-medium">${fmtVnd(it.line_total)}</td>
+                    <td class="px-2 py-2 text-slate-500">${(it.purpose as string) ?? ''}</td>
+                  </tr>
+                `,
+              )}
+            </tbody>
+            <tfoot class="bg-slate-50">
+              <tr><td colspan="6" class="px-2 py-1.5 text-right text-slate-600">Cộng tiền hàng</td>
+                <td class="px-2 py-1.5 text-right font-medium">${fmtVnd(proposal.subtotal)} VND</td><td></td></tr>
+              <tr><td colspan="6" class="px-2 py-1.5 text-right text-slate-600">VAT 10%</td>
+                <td class="px-2 py-1.5 text-right font-medium">${fmtVnd(proposal.vat_amount)} VND</td><td></td></tr>
+              <tr class="border-t border-slate-200">
+                <td colspan="6" class="px-2 py-1.5 text-right font-semibold">Tổng cộng (đã VAT)</td>
+                <td class="px-2 py-1.5 text-right font-bold text-blue-900">${fmtVnd(proposal.total_amount)} VND</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        `
+      : html`
+          <table class="w-full text-sm">
+            <thead class="bg-slate-50 text-slate-600">
+              <tr>
+                <th class="text-left px-3 py-2 w-12">STT</th>
+                <th class="text-left px-3 py-2">Nội dung</th>
+                <th class="text-left px-3 py-2">Ghi chú</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(
+                (it, i) => html`
+                  <tr class="border-t border-slate-100">
+                    <td class="px-3 py-2 text-center">${String(i + 1).padStart(2, '0')}</td>
+                    <td class="px-3 py-2">${it.content as string}</td>
+                    <td class="px-3 py-2 text-slate-500">${(it.note as string) ?? ''}</td>
+                  </tr>
+                `,
+              )}
+            </tbody>
+          </table>
+        `
     : html`<p class="text-slate-400 text-sm px-3 py-3">Không có hạng mục.</p>`;
 
   const approvalsHtml = approvals.length
@@ -651,6 +1000,8 @@ export function proposalDetailPage(
         ${approvals.map((a) => {
           const stepLabel: Record<string, string> = {
             manager: 'Trưởng phòng',
+            engineering: 'EN (Kỹ thuật)',
+            ic: 'IC (KSNB)',
             bod: 'BGĐ',
             ksnb: 'KSNB',
           };
@@ -673,9 +1024,18 @@ export function proposalDetailPage(
       </ul>`
     : html`<p class="text-slate-400 text-sm">Chưa có hành động duyệt nào.</p>`;
 
+  const actionRole = canManagerAct
+    ? 'manager-action'
+    : canEngineeringAct
+      ? 'engineering-action'
+      : canIcAct
+        ? 'ic-action'
+        : canBodAct
+          ? 'bod-action'
+          : null;
+
   const actionBar: Html = ((): Html => {
-    // Owner-side actions. Approver-side (TP/BGĐ) handled riêng bên dưới vì có reject UI.
-    if (!canManagerAct && !canBodAct && (canSubmit || canEdit || canCancel)) {
+    if (!actionRole && (canSubmit || canEdit || canCancel)) {
       return html`
         <div class="flex flex-wrap gap-2">
           ${canSubmit
@@ -698,16 +1058,20 @@ export function proposalDetailPage(
             : ''}
         </div>`;
     }
-    if (canManagerAct || canBodAct) {
-      const role = canManagerAct ? 'manager-action' : 'bod-action';
-      // Không nested x-data: dùng trực tiếp rejectMode/comment từ detail() scope
-      // ($root trong nested x-data trỏ về inner scope, không thấy _do → bug click silent)
+    if (actionRole) {
+      const approveLabel = canEngineeringAct
+        ? '✓ Duyệt (EN)'
+        : canIcAct
+          ? '✓ Duyệt (IC)'
+          : canBodAct
+            ? '✓ Duyệt (BGĐ)'
+            : '✓ Duyệt';
       return html`
         <div class="space-y-2">
           <div class="flex gap-2" x-show="!rejectMode">
-            <button @click="_do('${role}', 'approve', '')" :disabled="busy"
+            <button @click="_do('${actionRole}', 'approve', '')" :disabled="busy"
               class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">
-              ✓ Duyệt
+              ${approveLabel}
             </button>
             <button @click="rejectMode = true"
               class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium">
@@ -718,7 +1082,7 @@ export function proposalDetailPage(
             <textarea x-model="comment" rows="2" placeholder="Lý do từ chối…"
               class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
             <div class="flex gap-2">
-              <button @click="comment.trim() && _do('${role}', 'reject', comment)" :disabled="busy"
+              <button @click="comment.trim() && _do('${actionRole}', 'reject', comment)" :disabled="busy"
                 class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium disabled:opacity-50">
                 Xác nhận từ chối
               </button>
@@ -733,11 +1097,36 @@ export function proposalDetailPage(
     return html`<p class="text-sm text-slate-400">Không có hành động khả dụng cho bạn.</p>`;
   })();
 
+  const typeBadge: Html = isPr
+    ? html`<span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-800 ring-1 ring-orange-200">🛒 Mua hàng</span>`
+    : html``;
+
+  const vendorsHtml: Html = isPr
+    ? html`
+        <div>
+          <div class="text-xs text-slate-500 mb-1">Nhà cung cấp đề nghị</div>
+          <ul class="text-sm space-y-1">
+            ${[proposal.suggested_vendor_1, proposal.suggested_vendor_2, proposal.suggested_vendor_3]
+              .filter((v) => v && (v as string).trim())
+              .map(
+                (v, i) =>
+                  html`<li class="border-l-2 border-slate-200 pl-2 whitespace-pre-wrap"><span class="text-slate-400 mr-1">${i + 1}.</span>${v as string}</li>`,
+              )}
+            ${![proposal.suggested_vendor_1, proposal.suggested_vendor_2, proposal.suggested_vendor_3].some(
+              (v) => v && (v as string).trim(),
+            )
+              ? html`<li class="text-slate-400 italic">(chưa có)</li>`
+              : ''}
+          </ul>
+        </div>`
+    : html``;
+
   const body = html`
     <div x-data="detail(${proposal.id})" class="max-w-3xl mx-auto space-y-4">
       <div class="flex items-center justify-between">
         <a href="/app" class="text-sm text-slate-500 hover:text-slate-700">← Hộp phiếu</a>
         <div class="flex items-center gap-3">
+          ${typeBadge}
           ${statusBadge(status)}
           <a href="/p/${String(proposal.id)}/print" target="_blank"
             class="text-sm text-blue-900 hover:text-blue-700 hover:underline">
@@ -762,6 +1151,8 @@ export function proposalDetailPage(
           <div><div class="text-slate-500">Người đề nghị</div><div>${proposal.proposer_name as string}</div></div>
           <div><div class="text-slate-500">Phòng</div><div>${proposal.proposer_dept as string}</div></div>
           ${proposal.manager_name ? html`<div><div class="text-slate-500">TP duyệt</div><div>${proposal.manager_name as string}</div></div>` : ''}
+          ${isPr && needEn && proposal.engineering_name ? html`<div><div class="text-slate-500">EN duyệt</div><div>${proposal.engineering_name as string}</div></div>` : ''}
+          ${isPr && proposal.ic_name ? html`<div><div class="text-slate-500">IC duyệt</div><div>${proposal.ic_name as string}</div></div>` : ''}
           ${proposal.bod_name ? html`<div><div class="text-slate-500">BGĐ duyệt</div><div>${proposal.bod_name as string}</div></div>` : ''}
         </div>
 
@@ -776,17 +1167,31 @@ export function proposalDetailPage(
         ${proposal.explanation
           ? html`<div><div class="text-xs text-slate-500 mb-1">Diễn giải</div><div class="whitespace-pre-wrap">${proposal.explanation as string}</div></div>`
           : ''}
-        ${proposal.required_time
+        ${!isPr && proposal.required_time
           ? html`<div>
               <div class="text-xs text-slate-500 mb-1">Thời gian cần thực hiện</div>
               <div>${proposal.required_time as string}</div>
             </div>`
           : ''}
+        ${isPr && proposal.delivery_date
+          ? html`<div>
+              <div class="text-xs text-slate-500 mb-1">Ngày cần giao</div>
+              <div>${proposal.delivery_date as string}</div>
+            </div>`
+          : ''}
+        ${isPr
+          ? html`<div>
+              <div class="text-xs text-slate-500 mb-1">Cần EN xem xét spec</div>
+              <div>${needEn ? 'Có' : 'Không'}</div>
+            </div>`
+          : ''}
 
         <div>
-          <div class="text-xs text-slate-500 mb-1">Hạng mục</div>
-          <div class="border border-slate-200 rounded overflow-hidden">${itemsHtml}</div>
+          <div class="text-xs text-slate-500 mb-1">${isPr ? 'Danh sách hàng mua' : 'Hạng mục'}</div>
+          <div class="border border-slate-200 rounded overflow-x-auto">${itemsHtml}</div>
         </div>
+
+        ${vendorsHtml}
 
         ${proposal.rejected_reason
           ? html`<div class="bg-rose-50 border border-rose-200 rounded p-3 text-sm">

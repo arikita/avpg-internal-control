@@ -82,7 +82,9 @@ export function statusBadge(status: string): Html {
   const map: Record<string, { label: string; cls: string }> = {
     draft:             { label: 'Nháp',           cls: 'bg-slate-100 text-slate-700' },
     submitted:         { label: 'Chờ TP duyệt',   cls: 'bg-amber-100 text-amber-800' },
-    manager_approved:  { label: 'Chờ BGĐ duyệt',  cls: 'bg-blue-100 text-blue-800' },
+    manager_approved:  { label: 'Đã qua TP',      cls: 'bg-blue-100 text-blue-800' },
+    en_approved:       { label: 'Đã qua EN',      cls: 'bg-indigo-100 text-indigo-800' },
+    ic_approved:       { label: 'Chờ BGĐ duyệt',  cls: 'bg-violet-100 text-violet-800' },
     completed:         { label: 'Đã duyệt',       cls: 'bg-emerald-100 text-emerald-800' },
     rejected:          { label: 'Từ chối',        cls: 'bg-rose-100 text-rose-800' },
     cancelled:         { label: 'Đã huỷ',         cls: 'bg-slate-200 text-slate-600' },

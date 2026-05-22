@@ -84,7 +84,11 @@ async function handleMessage(env: Bindings, msg: TgMessage): Promise<void> {
   const pendingKey = `tg:pending:${msg.chat.id}`;
   const raw = await env.KV.get(pendingKey);
   if (!raw) return;
-  const pending = JSON.parse(raw) as { kind: 'reject'; proposalId: number; role: 'manager' | 'bod' };
+  const pending = JSON.parse(raw) as {
+    kind: 'reject';
+    proposalId: number;
+    role: 'manager' | 'engineering' | 'ic' | 'bod';
+  };
   await env.KV.delete(pendingKey);
   await submitReject(env, msg, pending);
 }
@@ -167,14 +171,22 @@ async function cmdMyPending(env: Bindings, msg: TgMessage): Promise<void> {
     });
     return;
   }
+  const emailLower = u.email.toLowerCase();
   const res = await env.DB.prepare(
-    `SELECT id, code, title, proposer_name, proposer_dept, status
+    `SELECT id, code, title, proposer_name, proposer_dept, status, proposal_type
        FROM proposals
-      WHERE (manager_email = ?1 AND status = 'submitted')
-         OR (bod_email = ?1 AND status = 'manager_approved')
+      WHERE (LOWER(manager_email) = ?1 AND status = 'submitted')
+         OR (LOWER(engineering_email) = ?1 AND proposal_type = 'purchase'
+             AND engineering_required = 1 AND status = 'manager_approved')
+         OR (LOWER(ic_email) = ?1 AND proposal_type = 'purchase'
+             AND ((engineering_required = 0 AND status = 'manager_approved')
+                  OR (engineering_required = 1 AND status = 'en_approved')))
+         OR (LOWER(bod_email) = ?1
+             AND ((proposal_type = 'general' AND status = 'manager_approved')
+                  OR (proposal_type = 'purchase' AND status = 'ic_approved')))
       ORDER BY id DESC LIMIT 20`,
   )
-    .bind(u.email)
+    .bind(emailLower)
     .all<{
       id: number;
       code: string;
@@ -182,6 +194,7 @@ async function cmdMyPending(env: Bindings, msg: TgMessage): Promise<void> {
       proposer_name: string;
       proposer_dept: string;
       status: string;
+      proposal_type: string;
     }>();
   const rows = res.results ?? [];
   if (rows.length === 0) {
@@ -192,15 +205,95 @@ async function cmdMyPending(env: Bindings, msg: TgMessage): Promise<void> {
     return;
   }
   const list = rows
-    .map(
-      (r) =>
-        `• <code>${r.code}</code> · ${r.title}\n  ${r.proposer_name} (${r.proposer_dept})\n  ${env.APP_BASE_URL}/p/${r.id}`,
-    )
+    .map((r) => {
+      const tag = r.proposal_type === 'purchase' ? '🛒 ' : '';
+      return `• ${tag}<code>${r.code}</code> · ${r.title}\n  ${r.proposer_name} (${r.proposer_dept})\n  ${env.APP_BASE_URL}/p/${r.id}`;
+    })
     .join('\n\n');
   await sendMessage(env, {
     chatId: msg.chat.id,
     text: `<b>Phiếu chờ duyệt (${rows.length}):</b>\n\n${list}`,
   });
+}
+
+type ProposalCtx = {
+  id: number;
+  code: string;
+  status: string;
+  proposal_type: 'general' | 'purchase';
+  engineering_required: number;
+  manager_email: string | null;
+  engineering_email: string | null;
+  engineering_name: string | null;
+  ic_email: string | null;
+  ic_name: string | null;
+  bod_email: string | null;
+  bod_name: string | null;
+  proposer_user_id: string;
+};
+
+type Role = 'manager' | 'engineering' | 'ic' | 'bod';
+
+// Detect role hợp lệ tại thời điểm callback (email + status match).
+function detectRole(p: ProposalCtx, userEmail: string): Role | null {
+  const u = userEmail.toLowerCase();
+  if (p.status === 'submitted' && p.manager_email?.toLowerCase() === u) return 'manager';
+  if (
+    p.proposal_type === 'purchase' &&
+    p.engineering_required === 1 &&
+    p.status === 'manager_approved' &&
+    p.engineering_email?.toLowerCase() === u
+  )
+    return 'engineering';
+  if (p.proposal_type === 'purchase' && p.ic_email?.toLowerCase() === u) {
+    if (
+      (p.engineering_required === 0 && p.status === 'manager_approved') ||
+      (p.engineering_required === 1 && p.status === 'en_approved')
+    )
+      return 'ic';
+  }
+  // BOD: general → manager_approved; PR → ic_approved.
+  if (p.bod_email?.toLowerCase() === u) {
+    if (
+      (p.proposal_type === 'general' && p.status === 'manager_approved') ||
+      (p.proposal_type === 'purchase' && p.status === 'ic_approved')
+    )
+      return 'bod';
+  }
+  return null;
+}
+
+// Enqueue email + telegram cho 1 email recipient.
+async function enqueueNotifyPair(
+  env: Bindings,
+  proposalId: number,
+  event:
+    | 'submitted'
+    | 'manager_approved'
+    | 'engineering_approved'
+    | 'ic_approved'
+    | 'completed'
+    | 'rejected',
+  recipientEmail: string,
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
+     VALUES (?1, 'email', ?2, ?3, 'pending'),
+            (?1, 'telegram', ?2, ?3, 'pending')`,
+  )
+    .bind(proposalId, event, recipientEmail)
+    .run();
+}
+
+async function loadProposalCtx(env: Bindings, id: number): Promise<ProposalCtx | null> {
+  return await env.DB.prepare(
+    `SELECT id, code, status, proposal_type, engineering_required,
+            manager_email, engineering_email, engineering_name,
+            ic_email, ic_name, bod_email, bod_name, proposer_user_id
+       FROM proposals WHERE id = ?1`,
+  )
+    .bind(id)
+    .first<ProposalCtx>();
 }
 
 // ---------- Callback handler ----------
@@ -219,7 +312,6 @@ async function handleCallback(env: Bindings, cb: TgCallback): Promise<void> {
     return;
   }
 
-  // Lookup user theo chat_id
   const u = await env.DB.prepare(
     `SELECT id, email, display_name FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
   )
@@ -230,32 +322,22 @@ async function handleCallback(env: Bindings, cb: TgCallback): Promise<void> {
     return;
   }
 
-  const p = await env.DB.prepare(
-    `SELECT id, code, status, manager_email, bod_email, proposer_user_id
-       FROM proposals WHERE id = ?1`,
-  )
-    .bind(proposalId)
-    .first<{
-      id: number;
-      code: string;
-      status: string;
-      manager_email: string;
-      bod_email: string;
-      proposer_user_id: string;
-    }>();
+  const p = await loadProposalCtx(env, proposalId);
   if (!p) {
     await answerCallbackQuery(env, cb.id, 'Phiếu không tồn tại', true);
     return;
   }
 
-  // Xác định role
-  const isManager = p.status === 'submitted' && p.manager_email?.toLowerCase() === u.email.toLowerCase();
-  const isBod = p.status === 'manager_approved' && p.bod_email?.toLowerCase() === u.email.toLowerCase();
-  if (!isManager && !isBod) {
-    await answerCallbackQuery(env, cb.id, 'Bạn không có quyền duyệt phiếu này (hoặc trạng thái đã thay đổi)', true);
+  const role = detectRole(p, u.email);
+  if (!role) {
+    await answerCallbackQuery(
+      env,
+      cb.id,
+      'Bạn không có quyền duyệt phiếu này (hoặc trạng thái đã thay đổi)',
+      true,
+    );
     return;
   }
-  const role: 'manager' | 'bod' = isManager ? 'manager' : 'bod';
 
   if (action === 'approve') {
     await doApprove(env, cb, u, p, role);
@@ -278,92 +360,94 @@ async function doApprove(
   env: Bindings,
   cb: TgCallback,
   u: { id: string; email: string; display_name: string },
-  p: {
-    id: number;
-    code: string;
-    status: string;
-    bod_email: string;
-    manager_email: string;
-    proposer_user_id: string;
-  },
-  role: 'manager' | 'bod',
+  p: ProposalCtx,
+  role: Role,
 ): Promise<void> {
   const now = nowIso();
-  // BOD approve = final → status='completed', set bod_acted_at + completed_at.
-  const newStatus = role === 'manager' ? 'manager_approved' : 'completed';
-
-  const updateSql =
-    role === 'manager'
-      ? `UPDATE proposals SET status = 'manager_approved', manager_acted_at = ?2, updated_at = ?2 WHERE id = ?1`
-      : `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`;
-  void newStatus;
+  // Status mới + field timestamp tuỳ role + tuỳ proposal_type.
+  let newStatus: string;
+  let extraSetSql = '';
+  if (role === 'manager') {
+    newStatus = 'manager_approved';
+    extraSetSql = `, manager_acted_at = ?2`;
+  } else if (role === 'engineering') {
+    newStatus = 'en_approved';
+    extraSetSql = `, engineering_acted_at = ?2`;
+  } else if (role === 'ic') {
+    newStatus = 'ic_approved';
+    extraSetSql = `, ic_acted_at = ?2`;
+  } else {
+    // bod
+    newStatus = 'completed';
+    extraSetSql = `, bod_acted_at = ?2, completed_at = ?2`;
+  }
 
   await env.DB.batch([
-    env.DB.prepare(updateSql).bind(p.id, now),
+    env.DB.prepare(
+      `UPDATE proposals SET status = ?3, updated_at = ?2 ${extraSetSql} WHERE id = ?1`,
+    ).bind(p.id, now, newStatus),
     env.DB.prepare(
       `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, source)
        VALUES (?1, ?2, ?3, ?4, 'approve', 'telegram')`,
     ).bind(p.id, role, u.email, u.display_name),
   ]);
 
-  // Enqueue notify bước kế tiếp
-  if (role === 'manager') {
-    // Edge 6.2: proposer là BOD → auto-approve bước BOD → status='completed'
-    const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
-      .bind(p.proposer_user_id)
-      .first<{ email: string }>();
-    const proposerIsBod =
-      proposer?.email && proposer.email.toLowerCase() === p.bod_email?.toLowerCase();
+  // Notify bước kế tiếp + edge auto-skip (chỉ check 1 cấp, không recursive
+  // sâu vì chain auto-skip qua Telegram hiếm gặp — fallback: web).
+  const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
+    .bind(p.proposer_user_id)
+    .first<{ email: string }>();
+  const proposerEmail = proposer?.email?.toLowerCase() ?? '';
+  const isPr = p.proposal_type === 'purchase';
+  const needEn = p.engineering_required === 1;
 
-    if (proposerIsBod) {
-      const completedAt = nowIso();
-      await env.DB.batch([
-        env.DB.prepare(
-          `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
-        ).bind(p.id, completedAt),
-        env.DB.prepare(
-          `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-           VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'telegram')`,
-        ).bind(p.id, p.bod_email, p.bod_email),
-      ]);
+  // Helper: BOD auto-skip nếu proposer = BOD (final).
+  const tryBodAutoSkip = async (): Promise<boolean> => {
+    if (!p.bod_email || proposerEmail !== p.bod_email.toLowerCase()) return false;
+    const t = nowIso();
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
+      ).bind(p.id, t),
+      env.DB.prepare(
+        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
+         VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'telegram')`,
+      ).bind(p.id, p.bod_email, p.bod_name ?? p.bod_email),
+    ]);
+    if (proposer) await enqueueNotifyPair(env, p.id, 'completed', proposer.email);
+    if (env.KSNB_TELEGRAM_CHAT_ID) {
       await env.DB.prepare(
         `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-         VALUES (?1, 'email', 'completed', ?2, 'pending'),
-                (?1, 'telegram', 'completed', ?2, 'pending')`,
+         VALUES (?1, 'telegram', 'bod_approved', ?2, 'pending')`,
       )
-        .bind(p.id, proposer.email)
+        .bind(p.id, env.KSNB_TELEGRAM_CHAT_ID)
         .run();
-      if (env.KSNB_TELEGRAM_CHAT_ID) {
-        await env.DB.prepare(
-          `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-           VALUES (?1, 'telegram', 'bod_approved', ?2, 'pending')`,
-        )
-          .bind(p.id, env.KSNB_TELEGRAM_CHAT_ID)
-          .run();
+    }
+    return true;
+  };
+
+  if (role === 'manager') {
+    if (!isPr) {
+      // General → BOD next (hoặc auto-skip nếu proposer=BOD).
+      const skipped = await tryBodAutoSkip();
+      if (!skipped && p.bod_email) {
+        await enqueueNotifyPair(env, p.id, 'manager_approved', p.bod_email);
       }
-    } else {
-      await env.DB.prepare(
-        `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-         VALUES (?1, 'email', 'manager_approved', ?2, 'pending'),
-                (?1, 'telegram', 'manager_approved', ?2, 'pending')`,
-      )
-        .bind(p.id, p.bod_email)
-        .run();
+    } else if (needEn && p.engineering_email) {
+      await enqueueNotifyPair(env, p.id, 'manager_approved', p.engineering_email);
+    } else if (p.ic_email) {
+      await enqueueNotifyPair(env, p.id, 'manager_approved', p.ic_email);
+    }
+  } else if (role === 'engineering') {
+    if (p.ic_email) await enqueueNotifyPair(env, p.id, 'engineering_approved', p.ic_email);
+  } else if (role === 'ic') {
+    const skipped = await tryBodAutoSkip();
+    if (!skipped && p.bod_email) {
+      await enqueueNotifyPair(env, p.id, 'ic_approved', p.bod_email);
     }
   } else {
-    // BOD approve → completed: notify proposer + KSNB group informational
-    const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
-      .bind(p.proposer_user_id)
-      .first<{ email: string }>();
-    if (proposer) {
-      await env.DB.prepare(
-        `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-         VALUES (?1, 'email', 'completed', ?2, 'pending'),
-                (?1, 'telegram', 'completed', ?2, 'pending')`,
-      )
-        .bind(p.id, proposer.email)
-        .run();
-    }
+    // bod → completed.
+    if (proposer) await enqueueNotifyPair(env, p.id, 'completed', proposer.email);
     if (env.KSNB_TELEGRAM_CHAT_ID) {
       await env.DB.prepare(
         `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
@@ -374,7 +458,6 @@ async function doApprove(
     }
   }
 
-  // ACK callback + edit message gốc để xoá button
   await answerCallbackQuery(env, cb.id, '✅ Đã duyệt');
   if (cb.message) {
     await editMessageText(env, {
@@ -383,15 +466,13 @@ async function doApprove(
       text: `✅ <b>Đã duyệt</b> phiếu <code>${p.code}</code> lúc ${formatHHmm()}\n\n${env.APP_BASE_URL}/p/${p.id}`,
     });
   }
-
-  // Trigger queue ngay (không chờ cron)
   await runNotificationQueue(env);
 }
 
 async function submitReject(
   env: Bindings,
   msg: TgMessage,
-  pending: { proposalId: number; role: 'manager' | 'bod' },
+  pending: { proposalId: number; role: Role },
 ): Promise<void> {
   const reason = (msg.text ?? '').trim();
   if (!reason) {
@@ -408,24 +489,12 @@ async function submitReject(
     .first<{ id: string; email: string; display_name: string }>();
   if (!u) return;
 
-  const p = await env.DB.prepare(
-    `SELECT id, code, status, manager_email, bod_email, proposer_user_id
-       FROM proposals WHERE id = ?1`,
-  )
-    .bind(pending.proposalId)
-    .first<{
-      id: number;
-      code: string;
-      status: string;
-      manager_email: string;
-      bod_email: string;
-      proposer_user_id: string;
-    }>();
+  const p = await loadProposalCtx(env, pending.proposalId);
   if (!p) return;
 
-  // Re-validate quyền + trạng thái
-  const expectedStatus = pending.role === 'manager' ? 'submitted' : 'manager_approved';
-  if (p.status !== expectedStatus) {
+  // Re-validate trạng thái + quyền.
+  const role = detectRole(p, u.email);
+  if (role !== pending.role) {
     await sendMessage(env, {
       chatId: msg.chat.id,
       text: '⚠️ Trạng thái phiếu đã thay đổi, không thể từ chối nữa.',
@@ -434,7 +503,15 @@ async function submitReject(
   }
 
   const now = nowIso();
-  const ackField = pending.role === 'manager' ? 'manager_acted_at' : 'bod_acted_at';
+  // Field timestamp theo role.
+  const ackField =
+    pending.role === 'manager'
+      ? 'manager_acted_at'
+      : pending.role === 'engineering'
+        ? 'engineering_acted_at'
+        : pending.role === 'ic'
+          ? 'ic_acted_at'
+          : 'bod_acted_at';
 
   await env.DB.batch([
     env.DB.prepare(
@@ -446,19 +523,11 @@ async function submitReject(
     ).bind(p.id, pending.role, u.email, u.display_name, reason),
   ]);
 
-  // Notify proposer + (nếu reject ở BOD) cả manager
   const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
     .bind(p.proposer_user_id)
     .first<{ email: string }>();
-  if (proposer) {
-    await env.DB.prepare(
-      `INSERT INTO notifications (proposal_id, channel, event, recipient, status)
-       VALUES (?1, 'email', 'rejected', ?2, 'pending'),
-              (?1, 'telegram', 'rejected', ?2, 'pending')`,
-    )
-      .bind(p.id, proposer.email)
-      .run();
-  }
+  if (proposer) await enqueueNotifyPair(env, p.id, 'rejected', proposer.email);
+  // BOD reject → notify manager email cho biết.
   if (pending.role === 'bod' && p.manager_email) {
     await env.DB.prepare(
       `INSERT INTO notifications (proposal_id, channel, event, recipient, status)

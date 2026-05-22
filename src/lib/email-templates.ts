@@ -1,14 +1,16 @@
 // Email templates — HTML table-based để compat Outlook desktop.
-// Tham chiếu workflow-phase1.md mục 4.
+// Tham chiếu workflow-phase1.md mục 4. P2.1: thêm branch 'purchase' (PR).
 
 import type { Bindings } from '../types';
 import type { NotificationEvent } from './notifications';
+import { formatVnd } from './pr-math';
 import { vnDisplay } from './time';
 
 type ProposalRow = {
   id: number;
   code: string | null;
   status: string;
+  proposal_type: 'general' | 'purchase';
   proposer_name: string;
   proposer_dept: string;
   title: string;
@@ -16,10 +18,32 @@ type ProposalRow = {
   required_time: string;
   manager_name: string | null;
   manager_acted_at: string | null;
+  engineering_name: string | null;
+  engineering_acted_at: string | null;
+  ic_name: string | null;
+  ic_acted_at: string | null;
   bod_name: string | null;
   bod_acted_at: string | null;
+  delivery_date: string | null;
+  subtotal: number | null;
+  vat_amount: number | null;
+  total_amount: number | null;
   rejected_reason: string | null;
   completed_at: string | null;
+};
+
+type ItemRow = {
+  seq: number;
+  content: string | null;
+  note: string | null;
+  item_name: string | null;
+  spec: string | null;
+  unit: string | null;
+  qty_stock: number | null;
+  qty_buy: number | null;
+  unit_price: number | null;
+  line_total: number | null;
+  purpose: string | null;
 };
 
 type ApprovalRow = {
@@ -93,23 +117,116 @@ function button(label: string, url: string): string {
   </td></tr></table>`;
 }
 
+// Subject prefix [Đề xuất mua hàng] cho PR, [AVPG] cho general.
+function subjPrefix(p: ProposalRow): string {
+  return p.proposal_type === 'purchase' ? '[Đề xuất mua hàng]' : '[AVPG]';
+}
+
+// Bảng items: branch theo proposal_type — PR có cột hàng + total, general giữ format cũ.
+function itemsTable(p: ProposalRow, items: ItemRow[]): string {
+  if (p.proposal_type === 'purchase') {
+    if (!items.length) return '';
+    const rows = items
+      .map(
+        (it, i) => `
+        <tr>
+          <td style="border:1px solid #d1d5db;padding:4px 8px;text-align:center;">${i + 1}</td>
+          <td style="border:1px solid #d1d5db;padding:4px 8px;">${esc(it.item_name ?? '')}</td>
+          <td style="border:1px solid #d1d5db;padding:4px 8px;text-align:center;">${esc(it.unit ?? '')}</td>
+          <td style="border:1px solid #d1d5db;padding:4px 8px;text-align:right;">${esc(String(it.qty_buy ?? ''))}</td>
+          <td style="border:1px solid #d1d5db;padding:4px 8px;text-align:right;">${formatVnd(it.unit_price)}</td>
+          <td style="border:1px solid #d1d5db;padding:4px 8px;text-align:right;">${formatVnd(it.line_total)}</td>
+        </tr>`,
+      )
+      .join('');
+    return `
+      <table cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
+        <thead>
+          <tr style="background:#f3f4f6;">
+            <th style="border:1px solid #d1d5db;padding:6px 8px;width:32px;">STT</th>
+            <th style="border:1px solid #d1d5db;padding:6px 8px;text-align:left;">Tên hàng</th>
+            <th style="border:1px solid #d1d5db;padding:6px 8px;width:60px;">ĐVT</th>
+            <th style="border:1px solid #d1d5db;padding:6px 8px;width:60px;">SL mua</th>
+            <th style="border:1px solid #d1d5db;padding:6px 8px;width:100px;text-align:right;">Đơn giá</th>
+            <th style="border:1px solid #d1d5db;padding:6px 8px;width:110px;text-align:right;">Thành tiền</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr>
+            <td colspan="5" style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;color:#6b7280;">Cộng tiền hàng</td>
+            <td style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;">${formatVnd(p.subtotal)} VND</td>
+          </tr>
+          <tr>
+            <td colspan="5" style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;color:#6b7280;">VAT 10%</td>
+            <td style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;">${formatVnd(p.vat_amount)} VND</td>
+          </tr>
+          <tr>
+            <td colspan="5" style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;font-weight:600;">Tổng cộng (đã VAT)</td>
+            <td style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;font-weight:600;color:#111827;">${formatVnd(p.total_amount)} VND</td>
+          </tr>
+        </tfoot>
+      </table>`;
+  }
+  // General: bảng STT/Nội dung/Ghi chú
+  if (!items.length) return '';
+  const rows = items
+    .map(
+      (it, i) => `
+      <tr>
+        <td style="border:1px solid #d1d5db;padding:4px 8px;text-align:center;">${i + 1}</td>
+        <td style="border:1px solid #d1d5db;padding:4px 8px;">${esc(it.content ?? '')}</td>
+        <td style="border:1px solid #d1d5db;padding:4px 8px;color:#6b7280;">${esc(it.note ?? '')}</td>
+      </tr>`,
+    )
+    .join('');
+  return `
+    <table cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;">
+      <thead>
+        <tr style="background:#f3f4f6;">
+          <th style="border:1px solid #d1d5db;padding:6px 8px;width:32px;">STT</th>
+          <th style="border:1px solid #d1d5db;padding:6px 8px;text-align:left;">Nội dung</th>
+          <th style="border:1px solid #d1d5db;padding:6px 8px;width:140px;text-align:left;">Ghi chú</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function loadItems(env: Bindings, proposalId: number): Promise<ItemRow[]> {
+  const res = await env.DB.prepare(
+    `SELECT seq, content, note, item_name, spec, unit, qty_stock, qty_buy, unit_price, line_total, purpose
+       FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
+  )
+    .bind(proposalId)
+    .all<ItemRow>();
+  return res.results ?? [];
+}
+
 // ---------- Render từng template ----------
 
-function renderSubmitted(env: Bindings, p: ProposalRow): RenderedEmail {
-  const subject = `[AVPG] Phiếu đề xuất ${p.code} cần bạn duyệt`;
+function renderSubmitted(env: Bindings, p: ProposalRow, items: ItemRow[]): RenderedEmail {
+  const isPr = p.proposal_type === 'purchase';
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} cần bạn duyệt`;
+  const infoRows: Array<[string, string]> = [
+    ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
+    ['Người đề nghị', `${esc(p.proposer_name)} (${esc(p.proposer_dept)})`],
+    ['Nội dung', esc(p.title)],
+  ];
+  if (isPr && p.delivery_date) infoRows.push(['Ngày cần giao', esc(p.delivery_date)]);
+  else if (!isPr && p.required_time) infoRows.push(['Thời gian', esc(p.required_time)]);
+  if (isPr && p.total_amount != null) {
+    infoRows.push(['Tổng tiền', `<strong>${formatVnd(p.total_amount)} VND</strong>`]);
+  }
   const inner = `
     <p>Kính gửi <strong>${esc(p.manager_name ?? '')}</strong>,</p>
-    <p>Anh/chị có 1 phiếu đề xuất mới cần duyệt:</p>
-    ${infoTable([
-      ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
-      ['Người đề nghị', `${esc(p.proposer_name)} (${esc(p.proposer_dept)})`],
-      ['Nội dung', esc(p.title)],
-      ['Thời gian', esc(p.required_time)],
-    ])}
+    <p>Anh/chị có 1 phiếu ${isPr ? 'đề xuất mua hàng' : 'đề xuất'} mới cần duyệt:</p>
+    ${infoTable(infoRows)}
     <div style="margin-top:16px;padding:12px;background:#f9fafb;border-left:3px solid #d1d5db;border-radius:4px;">
       <div style="color:#6b7280;font-size:12px;margin-bottom:4px;">Lý do</div>
       <div>${nl2br(p.reason)}</div>
     </div>
+    ${itemsTable(p, items)}
     ${button('Mở phiếu để duyệt', proposalUrl(env, p.id))}
   `;
   return { subject, html: wrap(env, 'Phiếu mới cần duyệt', inner) };
@@ -118,12 +235,18 @@ function renderSubmitted(env: Bindings, p: ProposalRow): RenderedEmail {
 function renderManagerApproved(
   env: Bindings,
   p: ProposalRow,
+  items: ItemRow[],
   managerComment: string | null,
 ): RenderedEmail {
-  const subject = `[AVPG] Phiếu ${p.code} đã qua TP — chờ BGĐ duyệt`;
+  const isPr = p.proposal_type === 'purchase';
+  // PR: sau TP còn EN/IC trước BOD. Subject + recipient label đổi theo bước kế tiếp.
+  // Recipient của event 'manager_approved' luôn được set bởi caller — template chỉ
+  // hiển thị nội dung "phiếu đã qua TP, chờ bước tiếp theo".
+  const nextLabel = isPr ? 'cần xem xét tiếp' : 'chờ BGĐ duyệt';
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} đã qua TP — ${nextLabel}`;
   const inner = `
-    <p>Kính gửi <strong>${esc(p.bod_name ?? '')}</strong>,</p>
-    <p>Phiếu đề xuất sau đã được Trưởng phòng duyệt, kính chuyển BGĐ:</p>
+    <p>Kính gửi anh/chị,</p>
+    <p>Phiếu ${isPr ? 'đề xuất mua hàng' : 'đề xuất'} sau đã được Trưởng phòng duyệt, kính chuyển bước tiếp theo:</p>
     ${infoTable([
       ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
       ['Đề xuất', esc(p.title)],
@@ -133,7 +256,69 @@ function renderManagerApproved(
         `${esc(p.manager_name ?? '')}${p.manager_acted_at ? ` <span style="color:#9ca3af">(${esc(vnDisplay(p.manager_acted_at))})</span>` : ''}`,
       ],
       ['Ý kiến TP', managerComment ? esc(managerComment) : '<span style="color:#9ca3af">(không có)</span>'],
+      ...(isPr && p.total_amount != null
+        ? ([['Tổng tiền', `<strong>${formatVnd(p.total_amount)} VND</strong>`]] as Array<[string, string]>)
+        : []),
     ])}
+    ${itemsTable(p, items)}
+    ${button('Mở phiếu để duyệt', proposalUrl(env, p.id))}
+  `;
+  return { subject, html: wrap(env, 'Phiếu chờ duyệt tiếp', inner) };
+}
+
+function renderEngineeringApproved(
+  env: Bindings,
+  p: ProposalRow,
+  items: ItemRow[],
+  enComment: string | null,
+): RenderedEmail {
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} đã qua EN — cần IC duyệt`;
+  const inner = `
+    <p>Kính gửi <strong>${esc(p.ic_name ?? '')}</strong>,</p>
+    <p>Phiếu đề xuất mua hàng đã được EN (kỹ thuật) duyệt, kính chuyển IC (KSNB):</p>
+    ${infoTable([
+      ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
+      ['Đề xuất', esc(p.title)],
+      ['Người đề nghị', `${esc(p.proposer_name)} (${esc(p.proposer_dept)})`],
+      [
+        'EN đã duyệt',
+        `${esc(p.engineering_name ?? '')}${p.engineering_acted_at ? ` <span style="color:#9ca3af">(${esc(vnDisplay(p.engineering_acted_at))})</span>` : ''}`,
+      ],
+      ['Ý kiến EN', enComment ? esc(enComment) : '<span style="color:#9ca3af">(không có)</span>'],
+      ...(p.total_amount != null
+        ? ([['Tổng tiền', `<strong>${formatVnd(p.total_amount)} VND</strong>`]] as Array<[string, string]>)
+        : []),
+    ])}
+    ${itemsTable(p, items)}
+    ${button('Mở phiếu để duyệt', proposalUrl(env, p.id))}
+  `;
+  return { subject, html: wrap(env, 'Phiếu chờ IC duyệt', inner) };
+}
+
+function renderIcApproved(
+  env: Bindings,
+  p: ProposalRow,
+  items: ItemRow[],
+  icComment: string | null,
+): RenderedEmail {
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} đã qua IC — cần BGĐ duyệt`;
+  const inner = `
+    <p>Kính gửi <strong>${esc(p.bod_name ?? '')}</strong>,</p>
+    <p>Phiếu đề xuất mua hàng đã qua TP, EN (nếu có) và IC, kính chuyển BGĐ duyệt:</p>
+    ${infoTable([
+      ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
+      ['Đề xuất', esc(p.title)],
+      ['Người đề nghị', `${esc(p.proposer_name)} (${esc(p.proposer_dept)})`],
+      [
+        'IC đã duyệt',
+        `${esc(p.ic_name ?? '')}${p.ic_acted_at ? ` <span style="color:#9ca3af">(${esc(vnDisplay(p.ic_acted_at))})</span>` : ''}`,
+      ],
+      ['Ý kiến IC', icComment ? esc(icComment) : '<span style="color:#9ca3af">(không có)</span>'],
+      ...(p.total_amount != null
+        ? ([['Tổng tiền', `<strong>${formatVnd(p.total_amount)} VND</strong>`]] as Array<[string, string]>)
+        : []),
+    ])}
+    ${itemsTable(p, items)}
     ${button('Mở phiếu để duyệt', proposalUrl(env, p.id))}
   `;
   return { subject, html: wrap(env, 'Phiếu chờ BGĐ duyệt', inner) };
@@ -142,9 +327,9 @@ function renderManagerApproved(
 // Phase 1: bod_approved chỉ còn dùng cho group telegram informational notify.
 // Email template giữ để future-proof (nếu thêm KSNB email list sau).
 function renderBodApproved(env: Bindings, p: ProposalRow): RenderedEmail {
-  const subject = `[AVPG] Phiếu ${p.code} đã duyệt xong`;
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} đã duyệt xong`;
   const inner = `
-    <p>Phiếu đề xuất sau đã được duyệt xong end-to-end:</p>
+    <p>Phiếu ${p.proposal_type === 'purchase' ? 'đề xuất mua hàng' : 'đề xuất'} sau đã được duyệt xong end-to-end:</p>
     ${infoTable([
       ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
       ['Đề xuất', esc(p.title)],
@@ -161,10 +346,10 @@ function renderBodApproved(env: Bindings, p: ProposalRow): RenderedEmail {
 }
 
 function renderCompleted(env: Bindings, p: ProposalRow): RenderedEmail {
-  const subject = `[AVPG] Phiếu ${p.code} của bạn đã được duyệt`;
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} của bạn đã được duyệt`;
   const inner = `
     <p><strong>${esc(p.proposer_name)}</strong>,</p>
-    <p>Phiếu đề xuất "<strong>${esc(p.title)}</strong>" của bạn đã được duyệt xong.</p>
+    <p>Phiếu ${p.proposal_type === 'purchase' ? 'đề xuất mua hàng' : 'đề xuất'} "<strong>${esc(p.title)}</strong>" của bạn đã được duyệt xong.</p>
     ${infoTable([
       ['Mã phiếu', `<code>${esc(p.code ?? '')}</code>`],
       [
@@ -189,10 +374,14 @@ function renderRejected(
   const stepLabel =
     rejector?.step === 'manager'
       ? 'Trưởng phòng'
-      : rejector?.step === 'bod'
-        ? 'Ban Giám đốc'
-        : '(không xác định)';
-  const subject = `[AVPG] Phiếu ${p.code} bị từ chối`;
+      : rejector?.step === 'engineering'
+        ? 'EN (kỹ thuật)'
+        : rejector?.step === 'ic'
+          ? 'IC (KSNB)'
+          : rejector?.step === 'bod'
+            ? 'Ban Giám đốc'
+            : '(không xác định)';
+  const subject = `${subjPrefix(p)} Phiếu ${p.code} bị từ chối`;
   const inner = `
     <p><strong>${esc(p.proposer_name)}</strong>,</p>
     <p>Phiếu đề xuất của bạn đã bị từ chối tại bước <strong>${esc(stepLabel)}</strong>:</p>
@@ -222,8 +411,13 @@ export async function renderEmail(
   proposalId: number,
 ): Promise<RenderedEmail> {
   const p = await env.DB.prepare(
-    `SELECT id, code, status, proposer_name, proposer_dept, title, reason, required_time,
-            manager_name, manager_acted_at, bod_name, bod_acted_at,
+    `SELECT id, code, status, proposal_type,
+            proposer_name, proposer_dept, title, reason, required_time,
+            manager_name, manager_acted_at,
+            engineering_name, engineering_acted_at,
+            ic_name, ic_acted_at,
+            bod_name, bod_acted_at,
+            delivery_date, subtotal, vat_amount, total_amount,
             rejected_reason, completed_at
        FROM proposals WHERE id = ?1`,
   )
@@ -232,9 +426,12 @@ export async function renderEmail(
   if (!p) throw new Error(`Proposal ${proposalId} không tồn tại`);
 
   switch (event) {
-    case 'submitted':
-      return renderSubmitted(env, p);
+    case 'submitted': {
+      const items = await loadItems(env, proposalId);
+      return renderSubmitted(env, p, items);
+    }
     case 'manager_approved': {
+      const items = await loadItems(env, proposalId);
       const a = await env.DB.prepare(
         `SELECT step, actor_name, action, comment, acted_at FROM approvals
           WHERE proposal_id = ?1 AND step = 'manager' AND action = 'approve'
@@ -242,7 +439,29 @@ export async function renderEmail(
       )
         .bind(proposalId)
         .first<ApprovalRow>();
-      return renderManagerApproved(env, p, a?.comment ?? null);
+      return renderManagerApproved(env, p, items, a?.comment ?? null);
+    }
+    case 'engineering_approved': {
+      const items = await loadItems(env, proposalId);
+      const a = await env.DB.prepare(
+        `SELECT step, actor_name, action, comment, acted_at FROM approvals
+          WHERE proposal_id = ?1 AND step = 'engineering' AND action = 'approve'
+          ORDER BY acted_at DESC LIMIT 1`,
+      )
+        .bind(proposalId)
+        .first<ApprovalRow>();
+      return renderEngineeringApproved(env, p, items, a?.comment ?? null);
+    }
+    case 'ic_approved': {
+      const items = await loadItems(env, proposalId);
+      const a = await env.DB.prepare(
+        `SELECT step, actor_name, action, comment, acted_at FROM approvals
+          WHERE proposal_id = ?1 AND step = 'ic' AND action = 'approve'
+          ORDER BY acted_at DESC LIMIT 1`,
+      )
+        .bind(proposalId)
+        .first<ApprovalRow>();
+      return renderIcApproved(env, p, items, a?.comment ?? null);
     }
     case 'bod_approved':
       return renderBodApproved(env, p);

@@ -24,6 +24,8 @@ adminRoutes.get('/notify/preview', async (c) => {
   const event = c.req.query('event') as
     | 'submitted'
     | 'manager_approved'
+    | 'engineering_approved'
+    | 'ic_approved'
     | 'bod_approved'
     | 'completed'
     | 'rejected'

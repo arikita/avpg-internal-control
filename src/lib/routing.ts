@@ -36,3 +36,31 @@ export async function getActiveBod(env: Bindings): Promise<Approver> {
   }
   return row;
 }
+
+export async function getActiveEngineering(env: Bindings): Promise<Approver> {
+  const row = await env.DB.prepare(
+    `SELECT user_email AS email, user_name AS name
+       FROM engineering_members
+      WHERE is_active = 1
+      ORDER BY routing_order ASC, id ASC LIMIT 1`,
+  )
+    .first<Approver>();
+  if (!row) {
+    throw unprocessable('Chưa có Phòng EN (kỹ thuật) active. Liên hệ KSNB.', 'no_engineering');
+  }
+  return row;
+}
+
+export async function getActiveIc(env: Bindings): Promise<Approver> {
+  const row = await env.DB.prepare(
+    `SELECT user_email AS email, user_name AS name
+       FROM ic_members
+      WHERE is_active = 1
+      ORDER BY routing_order ASC, id ASC LIMIT 1`,
+  )
+    .first<Approver>();
+  if (!row) {
+    throw unprocessable('Chưa có Phòng IC (KSNB) active. Liên hệ KSNB.', 'no_ic');
+  }
+  return row;
+}

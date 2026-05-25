@@ -60,6 +60,8 @@ id = "3ad3d22ff7ac4fa092f2b830b188f0a5"
 pattern = "dexuat.avpgtech.com"
 custom_domain = true
 
-# Cron — gửi lại notifications pending (mỗi 5 phút)
+# Cron (inherited bởi env.production):
+#   */5  — gửi lại notifications pending
+#   */15 — account-sync: poll Graph phát hiện account bị disable trên Entra/AD
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "*/15 * * * *"]

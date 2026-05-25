@@ -96,3 +96,24 @@ export async function graphMe(accessToken: string): Promise<GraphMe> {
   }
   return res.json();
 }
+
+// App-only query trạng thái accountEnabled của 1 user (cron account-sync dùng).
+// YÊU CẦU permission: User.Read.All (application) + admin consent trong Entra.
+// Trả: true=enabled, false=disabled (hoặc đã xoá khỏi directory → 404),
+//      null=không xác định (field thiếu / response lạ) → caller giữ nguyên state.
+export async function fetchAccountEnabled(
+  appToken: string,
+  userId: string,
+): Promise<boolean | null> {
+  const res = await fetch(
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(userId)}?$select=id,accountEnabled`,
+    { headers: { Authorization: `Bearer ${appToken}` } },
+  );
+  if (res.status === 404) return false; // user bị xoá khỏi directory → coi như disabled
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph user query failed (${res.status}): ${text}`);
+  }
+  const json = (await res.json()) as { accountEnabled?: boolean };
+  return typeof json.accountEnabled === 'boolean' ? json.accountEnabled : null;
+}

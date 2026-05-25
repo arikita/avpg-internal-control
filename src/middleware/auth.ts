@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import type { AppEnv, SessionUser } from '../types';
-import { sessionCookieName, verifySession } from '../lib/session';
+import { clearSessionCookie, sessionCookieName, verifySession } from '../lib/session';
 import { unauthorized } from '../lib/errors';
 
 // Bypass: khi DEV_MOCK_USER=1 → inject mock user (chỉ chạy local).
@@ -29,7 +29,21 @@ export const sessionMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
   const token = getCookie(c, sessionCookieName());
   if (token) {
     const user = await verifySession(token, c.env.SESSION_SECRET);
-    if (user) c.set('user', user);
+    if (user) {
+      // Chặn account đã bị disable trên Entra (sync xuống qua cron account-sync).
+      // Cookie có hạn 7 ngày nên phải re-check DB mỗi request, không tin snapshot.
+      const row = await c.env.DB.prepare(
+        `SELECT account_enabled FROM users WHERE id = ?1`,
+      )
+        .bind(user.id)
+        .first<{ account_enabled: number }>();
+      if (row && row.account_enabled === 0) {
+        // Disabled → xoá cookie, coi như chưa đăng nhập (requireAuth sẽ 401).
+        c.header('Set-Cookie', clearSessionCookie(c.env.APP_ENV === 'production'));
+      } else {
+        c.set('user', user);
+      }
+    }
   }
   await next();
 };

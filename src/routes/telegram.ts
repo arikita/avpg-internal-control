@@ -160,14 +160,21 @@ async function cmdLink(env: Bindings, msg: TgMessage, token: string): Promise<vo
 async function cmdMyPending(env: Bindings, msg: TgMessage): Promise<void> {
   if (msg.chat.type !== 'private') return;
   const u = await env.DB.prepare(
-    `SELECT id, email FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
+    `SELECT id, email, account_enabled FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
   )
     .bind(String(msg.chat.id))
-    .first<{ id: string; email: string }>();
+    .first<{ id: string; email: string; account_enabled: number }>();
   if (!u) {
     await sendMessage(env, {
       chatId: msg.chat.id,
       text: '⚠️ Chat này chưa link tài khoản. Gõ /start để xem hướng dẫn.',
+    });
+    return;
+  }
+  if (u.account_enabled === 0) {
+    await sendMessage(env, {
+      chatId: msg.chat.id,
+      text: '🚫 Tài khoản của bạn đã bị vô hiệu hoá. Vui lòng liên hệ IT/KSNB.',
     });
     return;
   }
@@ -313,12 +320,16 @@ async function handleCallback(env: Bindings, cb: TgCallback): Promise<void> {
   }
 
   const u = await env.DB.prepare(
-    `SELECT id, email, display_name FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
+    `SELECT id, email, display_name, account_enabled FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
   )
     .bind(String(chatId))
-    .first<{ id: string; email: string; display_name: string }>();
+    .first<{ id: string; email: string; display_name: string; account_enabled: number }>();
   if (!u) {
     await answerCallbackQuery(env, cb.id, 'Chat chưa link tài khoản. Gõ /start.', true);
+    return;
+  }
+  if (u.account_enabled === 0) {
+    await answerCallbackQuery(env, cb.id, '🚫 Tài khoản đã bị vô hiệu hoá, không thể duyệt.', true);
     return;
   }
 
@@ -483,11 +494,18 @@ async function submitReject(
     return;
   }
   const u = await env.DB.prepare(
-    `SELECT id, email, display_name FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
+    `SELECT id, email, display_name, account_enabled FROM users WHERE telegram_chat_id = ?1 LIMIT 1`,
   )
     .bind(String(msg.chat.id))
-    .first<{ id: string; email: string; display_name: string }>();
+    .first<{ id: string; email: string; display_name: string; account_enabled: number }>();
   if (!u) return;
+  if (u.account_enabled === 0) {
+    await sendMessage(env, {
+      chatId: msg.chat.id,
+      text: '🚫 Tài khoản của bạn đã bị vô hiệu hoá, không thể từ chối phiếu.',
+    });
+    return;
+  }
 
   const p = await loadProposalCtx(env, pending.proposalId);
   if (!p) return;

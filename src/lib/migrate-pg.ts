@@ -13,16 +13,18 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Chờ Postgres sẵn sàng (container có thể start chậm hơn app dù đã depends_on healthy).
 async function waitForDb(pool: Pool, attempts = 20): Promise<void> {
+  let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       await pool.query('SELECT 1');
       return;
-    } catch {
-      console.log(`[migrate-pg] chờ Postgres... (${i + 1}/${attempts})`);
+    } catch (e) {
+      lastErr = e;
+      console.log(`[migrate-pg] chờ Postgres... (${i + 1}/${attempts}): ${(e as Error).message}`);
       await sleep(1500);
     }
   }
-  throw new Error('[migrate-pg] không kết nối được Postgres');
+  throw new Error(`[migrate-pg] không kết nối được Postgres: ${(lastErr as Error)?.message}`);
 }
 
 export async function runMigrations(pool: Pool): Promise<void> {

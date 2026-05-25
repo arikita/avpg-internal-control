@@ -189,7 +189,9 @@ webRoutes.get('/p/:id{[0-9]+}/print', async (c) => {
     .first<Record<string, unknown>>();
   if (!proposal) throw notFound('Phiếu không tồn tại');
   const items = await c.env.DB.prepare(
-    `SELECT id, seq, content, note FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
+    `SELECT id, seq, content, note,
+            item_name, spec, unit, qty_stock, qty_buy, unit_price, line_total, purpose
+       FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
   )
     .bind(id)
     .all<Record<string, unknown>>();
@@ -233,7 +235,9 @@ webRoutes.get('/p/:id{[0-9]+}', async (c) => {
     .first<Record<string, unknown>>();
   if (!proposal) throw notFound('Phiếu không tồn tại');
   const items = await c.env.DB.prepare(
-    `SELECT id, seq, content, note FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
+    `SELECT id, seq, content, note,
+            item_name, spec, unit, qty_stock, qty_buy, unit_price, line_total, purpose
+       FROM proposal_items WHERE proposal_id = ?1 ORDER BY seq ASC`,
   )
     .bind(id)
     .all<Record<string, unknown>>();

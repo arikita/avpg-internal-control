@@ -1,0 +1,16 @@
+node_modules
+.git
+.wrangler
+dist
+build
+*.log
+.env
+.env.*
+!.env.example
+docs/**/*.pdf
+docs/templates
+docs/references
+docs/users
+"2. *"
+backup-*.sql
+.DS_Store

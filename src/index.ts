@@ -1,49 +1,20 @@
-import { Hono } from 'hono';
-import { logger } from 'hono/logger';
-import { secureHeaders } from 'hono/secure-headers';
-
+// Cloudflare Workers entrypoint. Wiring routes ở src/app.ts (dùng chung với src/server.ts).
 import type { AppEnv } from './types';
-import { sessionMiddleware } from './middleware/auth';
-import { errorHandler } from './middleware/error';
-import { authRoutes } from './routes/auth';
-import { proposalRoutes } from './routes/proposals';
-import { directoryRoutes } from './routes/directory';
-import { telegramRoutes } from './routes/telegram';
-import { webRoutes } from './routes/web';
-import { adminRoutes } from './routes/admin';
-import { meRoutes } from './routes/me';
-import { staticRoutes } from './routes/static';
+import { app } from './app';
 import { runNotificationQueue } from './lib/notifications';
+import { runAccountSync } from './lib/account-sync';
 
-const app = new Hono<AppEnv>();
-
-app.use('*', logger());
-app.use('*', secureHeaders());
-app.use('*', sessionMiddleware);
-app.onError(errorHandler);
-
-app.get('/health', (c) =>
-  c.json({ ok: true, env: c.env.APP_ENV, time: new Date().toISOString() }),
-);
-
-app.get('/me', (c) => {
-  const user = c.get('user');
-  return c.json({ user: user ?? null });
-});
-
-app.route('/auth', authRoutes);
-app.route('/api/proposals', proposalRoutes);
-app.route('/api/directory', directoryRoutes);
-app.route('/api/me', meRoutes);
-app.route('/admin', adminRoutes);
-app.route('/telegram', telegramRoutes);
-app.route('/static', staticRoutes);
-app.route('/', webRoutes);
-
-// Cron — retry pending notifications (xem wrangler.toml triggers).
+// Cron (xem wrangler.toml [triggers]):
+//   */5  → retry notifications pending
+//   */15 → account-sync: poll Graph phát hiện account bị disable trên Entra
+// Hai cron là 2 invocation riêng; phân biệt qua controller.cron.
 export default {
   fetch: app.fetch,
-  async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(runNotificationQueue(env));
+  async scheduled(controller, env, ctx) {
+    if (controller.cron === '*/15 * * * *') {
+      ctx.waitUntil(runAccountSync(env));
+    } else {
+      ctx.waitUntil(runNotificationQueue(env));
+    }
   },
 } satisfies ExportedHandler<AppEnv['Bindings']>;

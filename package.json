@@ -8,16 +8,23 @@
     "deploy": "wrangler deploy --env production",
     "tail": "wrangler tail",
     "typecheck": "tsc --noEmit",
+    "start": "tsx src/server.ts",
+    "dev:node": "tsx watch src/server.ts",
     "db:apply:local": "wrangler d1 migrations apply avpg_db --local",
     "db:apply:remote": "wrangler d1 migrations apply avpg_db --remote",
     "db:console:local": "wrangler d1 execute avpg_db --local --command",
     "db:console:remote": "wrangler d1 execute avpg_db --remote --command"
   },
   "dependencies": {
-    "hono": "^4.6.14"
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14",
+    "node-cron": "^3.0.3",
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250121.0",
+    "@types/node": "^22.10.5",
+    "@types/node-cron": "^3.0.11",
     "typescript": "^5.7.3",
     "wrangler": "^3.105.0"
   }

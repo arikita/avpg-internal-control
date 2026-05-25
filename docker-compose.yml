@@ -1,0 +1,39 @@
+# Self-hosted stack (Ubuntu on-prem). Ingress = Cloudflare Tunnel (phương án A).
+#   app        — Hono trên Node, HTTP nội bộ 8787 (KHÔNG expose ra host)
+#   postgres   — DB, cùng máy (Phase 2 wiring)
+#   cloudflared— tunnel public hostname → http://app:8787 (cấu hình ingress ở CF dashboard)
+#
+# Khởi động:  cp .env.example .env  (điền giá trị)  &&  docker compose up -d --build
+
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      PORT: "8787"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    # Không cần ports: cloudflared gọi nội bộ qua mạng compose.
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    # Mở port ra host chỉ khi cần debug từ máy chủ:
+    # ports: ["127.0.0.1:5432:5432"]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  pgdata:

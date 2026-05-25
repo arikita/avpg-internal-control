@@ -19,5 +19,7 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["node_modules"]
+  // Node-runtime entrypoint dùng node globals + deps Node (tsx transpile lúc chạy).
+  // Loại khỏi typecheck Workers; sẽ thành first-class ở Phase 2 (thay D1/KV bằng adapter).
+  "exclude": ["node_modules", "src/server.ts", "src/lib/node-env.ts"]
 }

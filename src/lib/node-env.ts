@@ -1,11 +1,10 @@
 // Dựng Bindings (c.env) cho runtime Node từ process.env.
 // Workers tự inject env; Node phải build tay rồi truyền vào app.fetch(req, env).
-//
-// PHASE 1: DB/KV còn là placeholder — mọi truy cập sẽ throw rõ ràng. Các route đụng
-// DB/KV sẽ lỗi có chủ đích cho tới khi Phase 2 thay bằng Postgres adapter + ephemeral_kv.
-// /health, /me (không cookie) chạy được ngay để verify runtime + ingress.
+// DB/KV = adapter Postgres (src/lib/pg.ts) cast về type D1 — routes dùng chung không sửa.
 
+import type { Pool } from 'pg';
 import type { Bindings } from '../types';
+import { PgDb, PgKv, createPool } from './pg';
 
 function reqEnv(key: string): string {
   const v = process.env[key];
@@ -13,20 +12,20 @@ function reqEnv(key: string): string {
   return v;
 }
 
-function notYet(name: string): never {
-  throw new Error(
-    `[node-env] ${name} chưa wiring cho runtime Node (sẽ có ở Phase 2: Postgres/ephemeral_kv adapter).`,
-  );
+let pool: Pool | null = null;
+export function getPool(): Pool {
+  if (!pool) pool = createPool(reqEnv('DATABASE_URL'));
+  return pool;
 }
 
-// Placeholder tới Phase 2: truy cập bất kỳ property nào cũng throw.
-const dbPlaceholder = new Proxy({} as Bindings['DB'], { get: () => notYet('DB (Postgres adapter)') });
-const kvPlaceholder = new Proxy({} as Bindings['KV'], { get: () => notYet('KV (ephemeral_kv)') });
-
 export function buildNodeEnv(): Bindings {
+  const p = getPool();
+  const db = new PgDb(p) as unknown as Bindings['DB'];
+  const kv = new PgKv(p) as unknown as Bindings['KV'];
+
   return {
-    DB: dbPlaceholder,
-    KV: kvPlaceholder,
+    DB: db,
+    KV: kv,
 
     APP_ENV: (process.env.APP_ENV as Bindings['APP_ENV']) ?? 'production',
     APP_BASE_URL: reqEnv('APP_BASE_URL'),

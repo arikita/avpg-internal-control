@@ -12,7 +12,8 @@ services:
     environment:
       PORT: "8787"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     # Không cần ports: cloudflared gọi nội bộ qua mạng compose.
 
@@ -24,6 +25,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
     # Mở port ra host chỉ khi cần debug từ máy chủ:
     # ports: ["127.0.0.1:5432:5432"]

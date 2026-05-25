@@ -135,7 +135,11 @@ KV hiện dùng cho: OIDC state/nonce (TTL 10'), Telegram pending-reject (TTL 5'
 - [x] **Phase 1 — Port runtime (XONG, verified):** `src/app.ts` (tách app dùng chung) + `src/server.ts` (`@hono/node-server` + node-cron) + `src/lib/node-env.ts`; Dockerfile + `docker-compose` (app + postgres + cloudflared) + `.env.example` + `.dockerignore`. Verify cục bộ: `tsx src/server.ts` phục vụ `/health` 200 + `/me` 200. Workers `src/index.ts` typecheck vẫn xanh (giữ tới cutover). *(DB/KV còn placeholder → throw có chủ đích tới Phase 2.)*
 
   **Cách chạy:** `cp .env.example .env` (điền `APP_BASE_URL`, `SESSION_SECRET`...) → `docker compose up -d --build`. Hoặc dev nhanh: `npm run start`.
-- [ ] **Phase 2 — Port DB:** schema Postgres, adapter layer, KV→`ephemeral_kv`, migrate data từ D1.
+- [~] **Phase 2 — Port DB (code XONG, verified cục bộ):** `db/postgres/0001_init.sql` (schema gộp + `iso_now()` + `ephemeral_kv`), `src/lib/pg.ts` (adapter D1→pg: prepare/bind/first/all/run/batch + PgKv), `src/lib/migrate-pg.ts` (runner + waitForDb), wire `node-env.ts`, server chạy migration lúc start + cron dọn KV. Typecheck Workers xanh; dịch SQL `?N→$N` + `datetime('now')→iso_now()` đã test. **Còn: migrate data thật từ D1 (xem dưới) + test runtime trên server.**
+
+  **Deploy/test trên server:** đảm bảo `.env` có `DATABASE_URL` (khớp `POSTGRES_*`), `APP_BASE_URL`, `SESSION_SECRET` → `docker compose up -d --build` → `docker compose logs -f app` (thấy "migrations OK" + "listening") → `docker compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c '\dt'` (thấy ~13 bảng).
+
+  **Data migration D1→Postgres (chưa làm — chờ chốt fresh vs migrate):** `wrangler d1 export avpg_db --remote --output dump.sql` → lọc INSERT (bỏ CREATE/sqlite_sequence) → nạp vào Postgres → `setval` lại sequence identity = max(id).
 - [ ] **Phase 3 — Auth + tích hợp:** đổi redirect URI Entra, re-point/đổi Telegram, verify login + bot.
 - [ ] **Phase 4 — LDAP realtime:** `account-sync` Graph→LDAP, poll 1–2', verify disable→chặn ~2'.
 - [ ] **Phase 5 — Cutover:** chạy song song, đổi DNS, tắt Workers.

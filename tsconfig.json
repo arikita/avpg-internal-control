@@ -21,5 +21,11 @@
   "include": ["src/**/*.ts", "src/**/*.tsx"],
   // Node-runtime entrypoint dùng node globals + deps Node (tsx transpile lúc chạy).
   // Loại khỏi typecheck Workers; sẽ thành first-class ở Phase 2 (thay D1/KV bằng adapter).
-  "exclude": ["node_modules", "src/server.ts", "src/lib/node-env.ts"]
+  "exclude": [
+    "node_modules",
+    "src/server.ts",
+    "src/lib/node-env.ts",
+    "src/lib/pg.ts",
+    "src/lib/migrate-pg.ts"
+  ]
 }

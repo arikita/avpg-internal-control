@@ -13,6 +13,7 @@ import { getActiveBod, getActiveEngineering, getActiveIc, getDeptManager } from 
 import { enqueueNotification, type NotificationEvent } from '../lib/notifications';
 import { calcPrTotals, lineTotal } from '../lib/pr-math';
 import { nowIso } from '../lib/time';
+import { logAudit, webAuditContext } from '../lib/audit';
 
 export const proposalRoutes = new Hono<AppEnv>();
 proposalRoutes.use('*', requireAuth);
@@ -684,6 +685,16 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
     ).bind(id, user.email, user.name, body.action, body.comment ?? null),
   ]);
 
+  {
+    const actx = await webAuditContext(c);
+    await logAudit(c.env, {
+      eventType: body.action, actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+      proposalId: id, step: 'manager', action: body.action, channel: 'web',
+      ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+      detail: JSON.stringify({ newStatus, comment: body.comment ?? null }),
+    });
+  }
+
   if (body.action === 'reject') {
     const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
       .bind(row.proposer_user_id)
@@ -854,6 +865,16 @@ proposalRoutes.post('/:id{[0-9]+}/engineering-action', async (c) => {
     ).bind(id, user.email, user.name, body.action, body.comment ?? null),
   ]);
 
+  {
+    const actx = await webAuditContext(c);
+    await logAudit(c.env, {
+      eventType: body.action, actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+      proposalId: id, step: 'engineering', action: body.action, channel: 'web',
+      ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+      detail: JSON.stringify({ newStatus, comment: body.comment ?? null }),
+    });
+  }
+
   const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
     .bind(row.proposer_user_id)
     .first<{ email: string }>();
@@ -940,6 +961,16 @@ proposalRoutes.post('/:id{[0-9]+}/ic-action', async (c) => {
     ).bind(id, user.email, user.name, body.action, body.comment ?? null),
   ]);
 
+  {
+    const actx = await webAuditContext(c);
+    await logAudit(c.env, {
+      eventType: body.action, actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+      proposalId: id, step: 'ic', action: body.action, channel: 'web',
+      ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+      detail: JSON.stringify({ newStatus, comment: body.comment ?? null }),
+    });
+  }
+
   const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
     .bind(row.proposer_user_id)
     .first<{ email: string }>();
@@ -1013,6 +1044,16 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
        VALUES (?1, 'bod', ?2, ?3, ?4, ?5, 'web')`,
     ).bind(id, user.email, user.name, body.action, body.comment ?? null),
   ]);
+
+  {
+    const actx = await webAuditContext(c);
+    await logAudit(c.env, {
+      eventType: body.action, actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+      proposalId: id, step: 'bod', action: body.action, channel: 'web',
+      ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+      detail: JSON.stringify({ newStatus, comment: body.comment ?? null }),
+    });
+  }
 
   if (body.action === 'approve') {
     // Notify proposer (completed) + KSNB group (informational)

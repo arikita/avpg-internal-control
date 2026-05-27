@@ -13,6 +13,7 @@ import { badRequest } from '../lib/errors';
 import { answerCallbackQuery, editMessageText, sendMessage } from '../lib/telegram';
 import { runNotificationQueue } from '../lib/notifications';
 import { nowIso } from '../lib/time';
+import { logAudit } from '../lib/audit';
 
 export const telegramRoutes = new Hono<AppEnv>();
 
@@ -403,6 +404,19 @@ async function doApprove(
     ).bind(p.id, role, u.email, u.display_name),
   ]);
 
+  await logAudit(env, {
+    eventType: 'approve',
+    actorEmail: u.email,
+    actorName: u.display_name,
+    actorUserId: u.id,
+    proposalId: p.id,
+    step: role,
+    action: 'approve',
+    channel: 'telegram',
+    telegramChatId: cb.from?.id != null ? String(cb.from.id) : null,
+    detail: JSON.stringify({ newStatus }),
+  });
+
   // Notify bước kế tiếp + edge auto-skip (chỉ check 1 cấp, không recursive
   // sâu vì chain auto-skip qua Telegram hiếm gặp — fallback: web).
   const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
@@ -540,6 +554,19 @@ async function submitReject(
        VALUES (?1, ?2, ?3, ?4, 'reject', ?5, 'telegram')`,
     ).bind(p.id, pending.role, u.email, u.display_name, reason),
   ]);
+
+  await logAudit(env, {
+    eventType: 'reject',
+    actorEmail: u.email,
+    actorName: u.display_name,
+    actorUserId: u.id,
+    proposalId: p.id,
+    step: pending.role,
+    action: 'reject',
+    channel: 'telegram',
+    telegramChatId: String(msg.chat.id),
+    detail: JSON.stringify({ reason }),
+  });
 
   const proposer = await env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
     .bind(p.proposer_user_id)

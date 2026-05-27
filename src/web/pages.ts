@@ -272,13 +272,12 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
       // ----- Xử lý ảnh chữ ký phía client (Canvas) -----
       // Pen-ink xanh bút bi royal #1A3E8C — đổi 3 số RGB nếu muốn màu mực khác.
       var SIG_INK = { r: 26, g: 62, b: 140 };
-      var SIG_LO = 95;            // luminance <= LO  -> nét đậm, đục hoàn toàn (alpha 255)
-      var SIG_HI = 200;           // luminance >= HI  -> nền giấy, trong suốt hoàn toàn (alpha 0)
-      var SIG_ALPHA_FLOOR = 65;   // alpha tính ra < ngưỡng này -> ép 0 (xoá nhiễu nền/bóng ảnh chụp)
+      var SIG_EDGE_BAND = 28;     // dải chuyển tiếp (anti-alias) ngay dưới ngưỡng nền tự dò
+      var SIG_ALPHA_FLOOR = 45;   // alpha tính ra < ngưỡng này -> ép 0 (xoá viền mờ/nhiễu)
       var SIG_MAX_DIM = 1000;     // thu cạnh dài nhất về <= giá trị này
       var SIG_MIN_DIM = 480;      // sàn khi phải hạ độ phân giải để giảm dung lượng
       var SIG_MAX_BYTES = 300 * 1024; // PNG ra phải <= ngưỡng này (khớp giới hạn server)
-      var SIG_TRIM_A = 0;         // sau khi ép nhiễu về 0, mọi alpha>0 là "có mực" -> crop sát nét
+      var SIG_TRIM_A = 0;         // sau khi nền về trong suốt, mọi alpha>0 là "có mực" -> crop sát nét
 
       function sigLoadViaImg(file) {
         return new Promise(function (resolve, reject) {
@@ -295,6 +294,25 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             .catch(function () { return sigLoadViaImg(file); });
         }
         return sigLoadViaImg(file);
+      }
+
+      // Otsu: tự dò ngưỡng luminance tách nét (tối) khỏi nền (sáng) cho RIÊNG từng ảnh.
+      function sigOtsu(hist, total) {
+        var sum = 0, i;
+        for (i = 0; i < 256; i++) sum += i * hist[i];
+        var sumB = 0, wB = 0, wF = 0, best = -1, t = 127, mB, mF, v;
+        for (i = 0; i < 256; i++) {
+          wB += hist[i];
+          if (wB === 0) continue;
+          wF = total - wB;
+          if (wF === 0) break;
+          sumB += i * hist[i];
+          mB = sumB / wB;          // mean lớp tối
+          mF = (sum - sumB) / wF;  // mean lớp sáng
+          v = wB * wF * (mB - mF) * (mB - mF); // between-class variance
+          if (v > best) { best = v; t = i; }
+        }
+        return t;
       }
 
       // Trả về Blob PNG: nền trong suốt, mực xanh, đã làm nét + crop sát nét.
@@ -318,17 +336,38 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
 
         var imgd = ctx.getImageData(0, 0, w, h);
         var d = imgd.data;
-        var span = (SIG_HI - SIG_LO) || 1;
+        var npx = w * h;
+
+        // Pass 1: histogram luminance -> tự dò ngưỡng nền (Otsu). Vì ngưỡng tính theo CHÍNH ảnh
+        // nên nền xám / ảnh chụp tối vẫn bị xoá (vùng sáng tương đối luôn thành nền).
+        var hist = new Array(256);
+        for (var k = 0; k < 256; k++) hist[k] = 0;
+        for (var p = 0; p < npx; p++) {
+          var o = p * 4;
+          hist[(0.299 * d[o] + 0.587 * d[o + 1] + 0.114 * d[o + 2]) | 0]++;
+        }
+        var t = sigOtsu(hist, npx);
+        // mean lớp tối (< t) = vị trí mực thật. Đặt mốc "đặc" giữa mean-mực và ngưỡng nền:
+        // Otsu hay rơi sát đỉnh cụm tối, nếu chỉ trừ một dải cố định thì bulk nét sẽ bị mờ.
+        var dSum = 0, dCnt = 0;
+        for (var k2 = 0; k2 < t; k2++) { dSum += k2 * hist[k2]; dCnt += hist[k2]; }
+        var inkMean = dCnt ? (dSum / dCnt) : Math.max(0, t - SIG_EDGE_BAND);
+        var transAt = t;                       // lum >= t -> nền -> trong suốt
+        var solidAt = (inkMean + t) / 2;        // lum <= solidAt -> nét đặc
+        if (transAt - solidAt < 1) solidAt = transAt - 1;
+        var rampSpan = (transAt - solidAt) || 1;
+
+        // Pass 2: gán alpha theo ngưỡng tự dò, ép mực xanh, dò bbox để crop.
         var minX = w, minY = h, maxX = -1, maxY = -1;
         for (var y = 0; y < h; y++) {
           for (var x = 0; x < w; x++) {
             var i = (y * w + x) * 4;
             var lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
             var a;
-            if (lum <= SIG_LO) a = 255;            // nét -> đục
-            else if (lum >= SIG_HI) a = 0;         // nền -> trong suốt
-            else a = Math.round(255 * (SIG_HI - lum) / span); // viền nét: alpha mượt
-            if (a < SIG_ALPHA_FLOOR) a = 0;        // ép nhiễu nền/bóng/viền mờ về trong suốt hẳn
+            if (lum >= transAt) a = 0;                             // nền -> trong suốt
+            else if (lum <= solidAt) a = 255;                      // nét đậm -> đục
+            else a = Math.round(255 * (transAt - lum) / rampSpan); // viền nét: alpha mượt
+            if (a < SIG_ALPHA_FLOOR) a = 0;                        // xoá viền mờ/nhiễu sát ngưỡng
             d[i] = SIG_INK.r; d[i + 1] = SIG_INK.g; d[i + 2] = SIG_INK.b; d[i + 3] = a;
             if (a > SIG_TRIM_A) {
               if (x < minX) minX = x;

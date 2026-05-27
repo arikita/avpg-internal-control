@@ -1,152 +1,110 @@
 # AVPG · Phiếu Đề Xuất
 
-Hệ thống quy trình đề xuất & phê duyệt nội bộ của tập đoàn AVPG. Toàn bộ nhân viên sử dụng, tích hợp M365 + Telegram.
+Hệ thống quy trình đề xuất & phê duyệt nội bộ của tập đoàn AVPG. Toàn bộ nhân viên dùng chung, tích hợp M365 (đăng nhập + email) và Telegram (thông báo + duyệt nhanh).
 
-> Phase 1 mới làm phiếu đề xuất chung. Các module riêng cho KSNB (mua hàng, báo cáo nội bộ) sẽ ship ở phase sau.
+> **Self-hosted** (on-prem) từ 2026-05. Trước đây chạy trên Cloudflare Workers/D1 — đã cutover sang server riêng + PostgreSQL + Cloudflare Tunnel. Xem [`docs/migration-selfhost.md`](docs/migration-selfhost.md).
 
-## Phase 1 — Phiếu đề xuất
+## Quy trình duyệt
 
-Quy trình: **Người đề xuất → Trưởng phòng duyệt → BOD duyệt → KSNB hoàn thiện hồ sơ**
+Có 2 loại phiếu, đi tuần tự (mỗi thời điểm chỉ chờ ở 1 bước):
 
-Người dùng tạo phiếu qua web; Telegram dùng để notify + duyệt nhanh (inline button). Thông báo qua email M365 + Telegram DM.
+- **Phiếu chung (general):** Người đề xuất → **Trưởng phòng (TP)** → **BGĐ** → hoàn thành.
+- **Phiếu mua hàng (purchase):** Người đề xuất → **TP** → *(Kỹ thuật/EN nếu cần)* → **KSNB/IC** → **BGĐ** → hoàn thành.
 
-## Stack
+Auto-skip: nếu người đề xuất trùng vai trò duyệt nào (TP/EN/IC/BGĐ) thì bước đó tự duyệt. Phiếu bị **từ chối là terminal** — không sửa lại được, phải tạo phiếu mới. Phiếu chỉ **sửa được khi chưa có bước phê duyệt nào** (draft/submitted).
+
+## Tính năng chính
+
+- Tạo/sửa phiếu qua web; duyệt qua web hoặc nút inline trên Telegram.
+- Thông báo qua email M365 (Microsoft Graph) + Telegram DM.
+- **Chữ ký:** upload ảnh → tự xử lý (xóa nền bằng Otsu, làm nét, đổi mực xanh, PNG nền trong suốt) chèn vào phiếu in.
+- **Audit log bất biến** (non-repudiation): ghi IP/thiết bị/phiên/kênh tại mỗi bước duyệt — xem ở `/admin/audit`.
+- **VAT nhập tay** (0/8/10%) cho phiếu mua hàng, tổng tiền tự tính.
+- **Account-sync:** account bị disable trên Entra/AD → chặn web + Telegram (cron poll).
+- Comment khi duyệt/từ chối (không bắt buộc); 1 tab **"Phiếu cần duyệt"** gộp mọi vai trò.
+
+## Kiến trúc
+
+Monolith server-rendered (frontend + backend chung 1 app Node/Hono). Không có SPA / build step riêng.
+
+```
+clasvr01 (DEV — sửa code, push)  →  GitHub (origin/main)  →  procsvr (PROD)
+                                                               docker compose:
+   người dùng ──HTTPS──► Cloudflare edge ──Tunnel(AVPG_Request)──►  app:8787 (Node/Hono)
+   (dexuat.avpgtech.com)                                            postgres:5432
+```
 
 | Lớp | Công nghệ |
 |---|---|
-| Frontend | Cloudflare Pages + HTML/Tailwind/Alpine.js |
-| Backend | Cloudflare Workers + Hono |
-| Database | Cloudflare D1 (SQLite) |
-| Files | Cloudflare R2 |
-| Auth | Microsoft Entra ID (M365 OIDC) |
-| Email | Microsoft Graph API |
+| Web framework | Hono trên Node (`@hono/node-server`), chạy bằng `tsx` |
+| Frontend | SSR HTML (`hono/html`) + Tailwind (CDN) + Alpine.js (CDN) |
+| Database | **PostgreSQL 16** (adapter `src/lib/pg.ts` mô phỏng API D1; KV → bảng `ephemeral_kv`) |
+| Hạ tầng | Docker Compose (app + postgres + cloudflared), ingress = **Cloudflare Tunnel** |
+| Auth | Microsoft Entra ID (M365 OIDC), session cookie HMAC |
+| Email | Microsoft Graph API (`/users/{mailbox}/sendMail`) |
 | Telegram | Bot Webhook |
-| CI/CD | GitHub → Cloudflare auto-deploy |
+| Cron | `node-cron` (notifications, account-sync, dọn KV) |
 
 ## Cấu trúc thư mục
 
 ```
-docs/                     # Tài liệu nghiệp vụ + setup guide
-├── templates/            # Template phiếu đề xuất (Word/Excel)
-├── users/                # Danh sách Manager / BOD / KSNB và luồng duyệt
-└── references/           # Workflow phase 1, Entra setup, business rules
+db/postgres/              # Migration Postgres (áp tự động lúc app khởi động)
+├── 0001_init.sql         #   schema gộp + iso_now() + ephemeral_kv
+├── 0002_audit_events.sql #   audit log append-only
+└── 0003_add_vat_rate.sql
 
-migrations/               # D1 SQL migrations
-├── 0001_initial_schema.sql
-└── 0002_seed_dev.sql     # Chỉ chạy --local
+src/
+├── server.ts             # Entrypoint Node (prod) — serve + cron + migrate
+├── app.ts                # Hono app, wiring routes (dùng chung)
+├── index.ts              # Entry Cloudflare Worker — LEGACY, giữ tham khảo
+├── lib/                  # pg, migrate-pg, node-env, entra, graph, session, codes,
+│                         #   routing, notifications, pr-math, account-sync, audit, ...
+├── middleware/           # auth (session + requireAdmin)
+├── routes/               # auth, proposals, me, admin, directory, telegram, web, static
+└── web/                  # layout.ts, pages.ts (form/dashboard/detail), print.ts
 
-src/                      # Worker source
-├── index.ts              # Hono app + cron handler
-├── types.ts              # Bindings + session types
-├── middleware/           # auth, error handler
-├── lib/                  # entra, session, codes, routing, notifications, time, users
-└── routes/               # auth, proposals, directory, telegram
-
-wrangler.toml             # Cloudflare config (D1/KV binding, cron, env)
-.dev.vars.example         # Copy → .dev.vars để chạy local
+docs/                     # Tài liệu nghiệp vụ + quy trình (QT-IT-*), migration plan
+docker-compose.yml        # app + postgres + cloudflared
+Dockerfile                # node:22-alpine, chạy `npm start` (tsx)
+.env.example              # copy → .env (đã gitignore)
+wrangler.toml             # config Worker cũ — LEGACY
 ```
 
----
+## Chạy local (dev)
 
-## Bắt đầu chạy local
+Cách giống prod nhất là dùng Docker Compose:
 
-### Bước 1 — Cài dependencies
+```bash
+cp .env.example .env          # điền DATABASE_URL, SESSION_SECRET, ...
+#   để test không cần OIDC thật: đặt APP_ENV=development + DEV_MOCK_USER=1
+docker compose up -d --build postgres app
+docker compose logs -f app    # thấy: applied *.sql · migrations OK · listening :8787
+```
+
+Hoặc chạy thẳng bằng Node (cần 1 Postgres + biến môi trường đã export):
 
 ```bash
 npm install
+npm run dev:node              # tsx watch src/server.ts (hot-reload)
 ```
 
-### Bước 2 — Tạo D1 + KV (1 lần duy nhất)
+Migration `db/postgres/*.sql` **tự áp lúc khởi động** (idempotent, track ở `schema_migrations`). `npm run typecheck` để check TypeScript.
+
+> Các script `npm run dev|deploy|db:*` trong `package.json` là của stack Cloudflare cũ — **không dùng nữa**.
+
+## Deploy (production — procsvr)
+
+Dev sửa code trên clasvr01 → commit + push GitHub → trên **procsvr** kéo về + rebuild:
 
 ```bash
-npx wrangler d1 create avpg_db
-npx wrangler kv namespace create AVPG_KV
+# trên procsvr (~/internal-control)
+git pull --ff-only
+docker compose up -d --build app     # migration mới (nếu có) tự chạy lúc app start
 ```
 
-Mỗi lệnh in ra một `id` — **paste vào `wrangler.toml`** chỗ tương ứng (`database_id`, KV `id`).
-
-### Bước 3 — Tạo `.dev.vars`
-
-```bash
-cp .dev.vars.example .dev.vars
-```
-
-Mở `.dev.vars` sửa giá trị. Phase 1 có thể để placeholder cho Entra — biến `DEV_MOCK_USER="1"` sẽ tự login user fake để test API.
-
-### Bước 4 — Apply migration
-
-```bash
-npm run db:apply:local
-```
-
-### Bước 5 — Chạy
-
-```bash
-npm run dev
-```
-
-Mở `http://localhost:8787/health` → phải trả `{"ok":true,...}`.
-`/me` → trả mock user (vì `DEV_MOCK_USER=1`).
-
-### Test API nhanh
-
-```bash
-# Tạo phiếu draft
-curl -X POST http://localhost:8787/api/proposals \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Test","reason":"Lý do","required_time":"30/05/2026","items":[{"seq":1,"content":"X"}]}'
-
-# Submit
-curl -X POST http://localhost:8787/api/proposals/1/submit
-```
-
----
-
-## Deploy lên Cloudflare
-
-→ Xem **[`docs/references/deploy-cloudflare.md`](docs/references/deploy-cloudflare.md)** cho step-by-step đầy đủ (10 bước, ~30 phút).
-
-Quick reference:
-```bash
-npx wrangler login                                # Bước 1
-npx wrangler d1 create avpg_db --env production   # Bước 2 — paste id vào wrangler.toml
-npx wrangler kv namespace create AVPG_KV --env production
-npm run db:apply:remote                           # Bước 3
-# Bước 4: push 7 secrets (xem deploy-cloudflare.md)
-# Bước 5: insert seed thật (departments, managers, bod)
-npm run deploy                                    # Bước 6 — custom domain tự bind
-# Bước 7: setWebhook cho Telegram bot
-# Bước 8: add prod redirect URI vào Entra App
-```
-
-Domain production: **`https://dexuat.avpgtech.com`** (custom domain bind tự động qua `wrangler.toml`).
-
-### Update sau khi deploy
-
-```bash
-npm run deploy
-```
-
-(GitHub Action CI/CD sẽ thêm sau.)
-
----
-
-## Trạng thái Phase 1
-
-✅ Schema D1 (10 bảng)
-✅ Workflow spec + email template (`docs/references/workflow-phase1.md`)
-✅ Entra setup guide (`docs/references/setup-entra-app.md`)
-✅ Worker scaffold (Hono, OIDC, proposal CRUD, state machine)
-✅ Notification queue stub (insert pending; cron 5 phút)
-
-🚧 Đang làm tiếp:
-- Frontend (Cloudflare Pages — form + inbox)
-- Graph sendMail thật (hiện mới enqueue)
-- Telegram bot handler (commands + inline approve)
-- GitHub Action CI/CD
+Domain production: **`https://dexuat.avpgtech.com`** (Cloudflare Tunnel `AVPG_Request` → `http://app:8787`, cấu hình ingress ở Zero Trust dashboard).
 
 ## Workflow upload tài liệu nghiệp vụ
 
-1. Upload file qua **GitHub web UI** (drag-drop vào đúng folder trong `docs/`)
-2. Đầu session tiếp theo, Claude tự `git pull` để lấy file mới
-3. Claude đọc file và xử lý
+1. Upload file qua **GitHub web UI** (kéo-thả vào đúng folder trong `docs/`).
+2. Đầu session sau, `git pull` để lấy file mới rồi xử lý.

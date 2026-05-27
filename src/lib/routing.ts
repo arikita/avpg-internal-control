@@ -16,7 +16,7 @@ export async function getDeptManager(env: Bindings, deptCode: string): Promise<A
     .first<Approver>();
   if (!row) {
     throw unprocessable(
-      `Phòng ${deptCode} chưa được gán Trưởng phòng. Liên hệ KSNB.`,
+      `Phòng ${deptCode} chưa được gán Trưởng phòng. Liên hệ quản trị hệ thống.`,
       'no_manager',
     );
   }
@@ -32,7 +32,7 @@ export async function getActiveBod(env: Bindings): Promise<Approver> {
   )
     .first<Approver>();
   if (!row) {
-    throw unprocessable('Chưa có BGĐ duyệt nào active. Liên hệ KSNB.', 'no_bod');
+    throw unprocessable('Chưa có BGĐ duyệt nào active. Liên hệ quản trị hệ thống.', 'no_bod');
   }
   return row;
 }
@@ -46,7 +46,7 @@ export async function getActiveEngineering(env: Bindings): Promise<Approver> {
   )
     .first<Approver>();
   if (!row) {
-    throw unprocessable('Chưa có Phòng EN (kỹ thuật) active. Liên hệ KSNB.', 'no_engineering');
+    throw unprocessable('Chưa có Phòng EN (kỹ thuật) active. Liên hệ quản trị hệ thống.', 'no_engineering');
   }
   return row;
 }
@@ -60,7 +60,7 @@ export async function getActiveIc(env: Bindings): Promise<Approver> {
   )
     .first<Approver>();
   if (!row) {
-    throw unprocessable('Chưa có Phòng IC (KSNB) active. Liên hệ KSNB.', 'no_ic');
+    throw unprocessable('Chưa có Phòng IC (KSNB) active. Liên hệ quản trị hệ thống.', 'no_ic');
   }
   return row;
 }

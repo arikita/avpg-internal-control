@@ -98,7 +98,7 @@ export function landingPage(user: SessionUser | null) {
             bảo mật thông tin của An Việt Phát Group.
           </p>
           <p class="text-xs text-slate-400 text-center mt-3">
-            Chưa được gán phòng ban? Liên hệ KSNB để được hỗ trợ.
+            Chưa được gán phòng ban? Liên hệ quản trị hệ thống để được hỗ trợ.
           </p>
         </div>
       </div>
@@ -184,8 +184,8 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           <!-- Tab Chữ ký -->
           <div x-show="settingsTab==='signature'" class="p-6 space-y-4">
             <p class="text-sm text-slate-600">
-              Chữ ký (PNG/JPG ≤200KB) sẽ tự động chèn vào phiếu in khi anh đề xuất hoặc duyệt phiếu.
-              Tip: chụp/scan chữ ký trên giấy trắng, crop nền trắng để xuất hiện đẹp.
+              Upload ảnh chữ ký — hệ thống tự động <b>xóa nền, làm nét, đổi sang mực xanh</b> và lưu PNG nền trong suốt để chèn vào phiếu in.
+              Tip: chụp/scan chữ ký viết trên <b>giấy trắng</b>, nét rõ; ảnh điện thoại cỡ lớn cũng được (tự thu nhỏ).
             </p>
             <div x-show="sigBusy" class="text-sm text-slate-500">Đang xử lý…</div>
 
@@ -269,6 +269,96 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
     </div>
 
     <script>
+      // ----- Xử lý ảnh chữ ký phía client (Canvas) -----
+      // Pen-ink xanh bút bi royal #1A3E8C — đổi 3 số RGB nếu muốn màu mực khác.
+      var SIG_INK = { r: 26, g: 62, b: 140 };
+      var SIG_LO = 95;          // luminance <= LO  -> nét đậm, đục hoàn toàn (alpha 255)
+      var SIG_HI = 200;         // luminance >= HI  -> nền giấy, trong suốt hoàn toàn (alpha 0)
+      var SIG_MAX_DIM = 1200;   // thu cạnh dài nhất về <= giá trị này
+      var SIG_TRIM_A = 12;      // alpha tối thiểu coi là "có mực" khi crop nền
+
+      function sigLoadViaImg(file) {
+        return new Promise(function (resolve, reject) {
+          var url = URL.createObjectURL(file);
+          var img = new Image();
+          img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+          img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Không đọc được ảnh')); };
+          img.src = url;
+        });
+      }
+      function sigLoadBitmap(file) {
+        if (window.createImageBitmap) {
+          return createImageBitmap(file, { imageOrientation: 'from-image' })
+            .catch(function () { return sigLoadViaImg(file); });
+        }
+        return sigLoadViaImg(file);
+      }
+
+      // Trả về Blob PNG: nền trong suốt, mực xanh, đã làm nét + crop sát nét.
+      async function processSignatureImage(file, maxDim) {
+        maxDim = maxDim || SIG_MAX_DIM;
+        var src = await sigLoadBitmap(file);
+        var sw = src.width, sh = src.height;
+        if (!sw || !sh) throw new Error('Ảnh rỗng');
+        var scale = Math.min(1, maxDim / Math.max(sw, sh));
+        var w = Math.max(1, Math.round(sw * scale));
+        var h = Math.max(1, Math.round(sh * scale));
+
+        var cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        var ctx = cv.getContext('2d');
+        // Nền trắng trước (ảnh PNG trong suốt -> coi như giấy trắng), rồi vẽ ảnh lên.
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(src, 0, 0, w, h);
+        if (src.close) src.close();
+
+        var imgd = ctx.getImageData(0, 0, w, h);
+        var d = imgd.data;
+        var span = (SIG_HI - SIG_LO) || 1;
+        var minX = w, minY = h, maxX = -1, maxY = -1;
+        for (var y = 0; y < h; y++) {
+          for (var x = 0; x < w; x++) {
+            var i = (y * w + x) * 4;
+            var lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+            var a;
+            if (lum <= SIG_LO) a = 255;            // nét -> đục
+            else if (lum >= SIG_HI) a = 0;         // nền -> trong suốt
+            else a = Math.round(255 * (SIG_HI - lum) / span); // viền nét: alpha mượt
+            d[i] = SIG_INK.r; d[i + 1] = SIG_INK.g; d[i + 2] = SIG_INK.b; d[i + 3] = a;
+            if (a > SIG_TRIM_A) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+        ctx.putImageData(imgd, 0, 0);
+
+        // Crop về bounding box của nét + chừa lề nhỏ. Không thấy mực -> giữ nguyên khung.
+        var out = cv;
+        if (maxX >= minX && maxY >= minY) {
+          var pad = Math.max(4, Math.round(Math.max(w, h) * 0.02));
+          var cx = Math.max(0, minX - pad);
+          var cy = Math.max(0, minY - pad);
+          var cw = Math.min(w, maxX + pad + 1) - cx;
+          var ch = Math.min(h, maxY + pad + 1) - cy;
+          var cropped = document.createElement('canvas');
+          cropped.width = cw; cropped.height = ch;
+          cropped.getContext('2d').drawImage(cv, cx, cy, cw, ch, 0, 0, cw, ch);
+          out = cropped;
+        }
+
+        var blob = await new Promise(function (resolve) { out.toBlob(resolve, 'image/png'); });
+        if (!blob) throw new Error('Không tạo được PNG');
+        // Còn nặng (>195KB) thì hạ độ phân giải rồi thử lại, tránh vượt giới hạn server.
+        if (blob.size > 195 * 1024 && maxDim > 600) {
+          return processSignatureImage(file, Math.round(maxDim * 0.8));
+        }
+        return blob;
+      }
+
       function dashboard(isManager, isBod, isEngineering, isIc, pendingManager, pendingBod, pendingEngineering, pendingIc) {
         return {
           tab: 'mine',
@@ -355,15 +445,21 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           async uploadSig(ev) {
             const file = ev.target.files && ev.target.files[0];
             if (!file) return;
-            if (file.size > 200 * 1024) {
-              alert('File vượt 200KB. Vui lòng resize/crop trước khi upload.');
+            // Ảnh gốc có thể là ảnh chụp điện thoại vài MB — sẽ tự thu nhỏ khi xử lý.
+            if (file.size > 20 * 1024 * 1024) {
+              alert('Ảnh quá lớn (>20MB). Chụp/scan lại nhỏ hơn giúp anh.');
               ev.target.value = '';
               return;
             }
             this.sigBusy = true;
             try {
+              // Tự xử lý: xóa nền trắng, làm nét, ép mực xanh, xuất PNG nền trong suốt.
+              const png = await processSignatureImage(file);
+              if (png.size > 200 * 1024) {
+                throw new Error('Ảnh sau xử lý vẫn >200KB, thử ảnh đơn giản/nhỏ hơn.');
+              }
               const fd = new FormData();
-              fd.append('file', file);
+              fd.append('file', png, 'signature.png');
               const r = await fetch('/api/me/signature', { method: 'POST', body: fd });
               if (!r.ok) throw new Error((await r.json()).error || 'Lỗi upload');
               // Reload to get fresh dataUrl

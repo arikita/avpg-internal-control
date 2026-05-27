@@ -17,7 +17,7 @@ export async function nextProposalCode(
   const row = await db
     .prepare(
       `INSERT INTO proposal_counters (dept_code, date_key, counter) VALUES (?1, ?2, 1)
-       ON CONFLICT(dept_code, date_key) DO UPDATE SET counter = counter + 1
+       ON CONFLICT(dept_code, date_key) DO UPDATE SET counter = proposal_counters.counter + 1
        RETURNING counter`,
     )
     .bind(deptCode, dateKey)
@@ -26,7 +26,7 @@ export async function nextProposalCode(
   if (!row) throw new Error('Counter insert returned no row');
   if (row.counter > MAX_PER_DAY) {
     throw unprocessable(
-      `Vượt giới hạn ${MAX_PER_DAY} phiếu/ngày cho phòng ${deptCode}. Liên hệ KSNB.`,
+      `Vượt giới hạn ${MAX_PER_DAY} phiếu/ngày cho phòng ${deptCode}. Liên hệ quản trị hệ thống.`,
       'counter_overflow',
     );
   }

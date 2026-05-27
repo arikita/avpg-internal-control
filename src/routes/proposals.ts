@@ -211,7 +211,7 @@ proposalRoutes.post('/', async (c) => {
   const user = c.get('user');
   if (!user.deptCode) {
     throw unprocessable(
-      'Tài khoản của bạn chưa được gán phòng ban. Liên hệ KSNB.',
+      'Tài khoản của bạn chưa được gán phòng ban. Liên hệ quản trị hệ thống.',
       'no_department',
     );
   }

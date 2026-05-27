@@ -55,7 +55,7 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
 };
 
-// Áp cho route admin (KSNB only). Đọc CSV ADMIN_EMAILS, lowercased.
+// Áp cho route admin (sysadmin/IT qua ADMIN_EMAILS, KHÔNG phải KSNB). Đọc CSV, lowercased.
 export function isAdmin(env: AppEnv['Bindings'], email: string): boolean {
   const raw = env.ADMIN_EMAILS ?? '';
   const list = raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
@@ -67,7 +67,7 @@ export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
   if (!user) throw unauthorized();
   if (!isAdmin(c.env, user.email)) {
     const { forbidden } = await import('../lib/errors');
-    throw forbidden('Endpoint admin — chỉ KSNB sử dụng');
+    throw forbidden('Endpoint admin — chỉ quản trị hệ thống sử dụng');
   }
   await next();
 };

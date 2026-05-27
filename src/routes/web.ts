@@ -96,7 +96,7 @@ webRoutes.get('/p/new', (c) => {
   const user = c.get('user');
   if (!user) return c.redirect('/auth/login?return_to=/p/new');
   if (!user.deptCode) {
-    throw unprocessable('Tài khoản chưa được gán phòng ban. Liên hệ KSNB.', 'no_department');
+    throw unprocessable('Tài khoản chưa được gán phòng ban. Liên hệ quản trị hệ thống.', 'no_department');
   }
   return c.html(newProposalPage(user));
 });

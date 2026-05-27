@@ -13,7 +13,7 @@ import { badRequest } from '../lib/errors';
 import { answerCallbackQuery, editMessageText, sendMessage } from '../lib/telegram';
 import { runNotificationQueue } from '../lib/notifications';
 import { nowIso } from '../lib/time';
-import { logAudit } from '../lib/audit';
+import { logAudit, logAutoSkips } from '../lib/audit';
 
 export const telegramRoutes = new Hono<AppEnv>();
 
@@ -439,6 +439,12 @@ async function doApprove(
          VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'telegram')`,
       ).bind(p.id, p.bod_email, p.bod_name ?? p.bod_email),
     ]);
+    await logAutoSkips(
+      env,
+      { ip: null, userAgent: null, sessionRef: null },
+      { proposalId: p.id, actorUserId: u.id, channel: 'telegram', telegramChatId: cb.from?.id != null ? String(cb.from.id) : null },
+      [{ step: 'bod', email: p.bod_email, name: p.bod_name ?? p.bod_email, reason: 'Tự duyệt do là BGĐ' }],
+    );
     if (proposer) await enqueueNotifyPair(env, p.id, 'completed', proposer.email);
     if (env.KSNB_TELEGRAM_CHAT_ID) {
       await env.DB.prepare(

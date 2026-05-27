@@ -107,7 +107,7 @@ webRoutes.get('/p/:id{[0-9]+}/edit', async (c) => {
   const id = Number(c.req.param('id'));
   const proposal = await c.env.DB.prepare(
     `SELECT id, status, proposal_type, proposer_user_id, title, reason, explanation, required_time,
-            engineering_required, delivery_date, suggested_vendor_1, suggested_vendor_2, suggested_vendor_3
+            engineering_required, delivery_date, suggested_vendor_1, suggested_vendor_2, suggested_vendor_3, vat_rate
        FROM proposals WHERE id = ?1`,
   )
     .bind(id)
@@ -125,11 +125,12 @@ webRoutes.get('/p/:id{[0-9]+}/edit', async (c) => {
       suggested_vendor_1: string | null;
       suggested_vendor_2: string | null;
       suggested_vendor_3: string | null;
+      vat_rate: number;
     }>();
   if (!proposal) throw notFound('Phiếu không tồn tại');
   if (proposal.proposer_user_id !== user.id) throw forbidden('Bạn không phải người tạo phiếu này');
-  if (!['draft', 'submitted', 'rejected'].includes(proposal.status)) {
-    throw unprocessable('Phiếu không thể sửa ở trạng thái hiện tại');
+  if (!['draft', 'submitted'].includes(proposal.status)) {
+    throw unprocessable('Phiếu đã vào quy trình duyệt, không sửa được. Tạo phiếu mới nếu cần.');
   }
   if (proposal.proposal_type === 'purchase') {
     const items = await c.env.DB.prepare(
@@ -158,6 +159,7 @@ webRoutes.get('/p/:id{[0-9]+}/edit', async (c) => {
         suggested_vendor_1: proposal.suggested_vendor_1,
         suggested_vendor_2: proposal.suggested_vendor_2,
         suggested_vendor_3: proposal.suggested_vendor_3,
+        vat_rate: proposal.vat_rate,
         items: items.results ?? [],
       }),
     );

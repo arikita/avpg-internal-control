@@ -28,6 +28,7 @@ type ProposalRow = {
   subtotal: number | null;
   vat_amount: number | null;
   total_amount: number | null;
+  vat_rate: number | null;
   rejected_reason: string | null;
   completed_at: string | null;
 };
@@ -158,7 +159,7 @@ function itemsTable(p: ProposalRow, items: ItemRow[]): string {
             <td style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;">${formatVnd(p.subtotal)} VND</td>
           </tr>
           <tr>
-            <td colspan="5" style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;color:#6b7280;">VAT 10%</td>
+            <td colspan="5" style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;color:#6b7280;">VAT ${p.vat_rate ?? 10}%</td>
             <td style="border:1px solid #d1d5db;padding:6px 8px;text-align:right;">${formatVnd(p.vat_amount)} VND</td>
           </tr>
           <tr>
@@ -417,7 +418,7 @@ export async function renderEmail(
             engineering_name, engineering_acted_at,
             ic_name, ic_acted_at,
             bod_name, bod_acted_at,
-            delivery_date, subtotal, vat_amount, total_amount,
+            delivery_date, subtotal, vat_amount, total_amount, vat_rate,
             rejected_reason, completed_at
        FROM proposals WHERE id = ?1`,
   )

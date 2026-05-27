@@ -581,6 +581,7 @@ export type ExistingProposalPurchase = {
   suggested_vendor_1: string | null;
   suggested_vendor_2: string | null;
   suggested_vendor_3: string | null;
+  vat_rate: number;
   items: Array<{
     item_name: string | null;
     spec: string | null;
@@ -612,6 +613,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
       suggested_vendor_1: existing.suggested_vendor_1 ?? '',
       suggested_vendor_2: existing.suggested_vendor_2 ?? '',
       suggested_vendor_3: existing.suggested_vendor_3 ?? '',
+      vat_rate: existing.vat_rate ?? 10,
       pr_items:
         existing.items.length > 0
           ? existing.items.map((it) => ({
@@ -656,6 +658,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
       suggested_vendor_1: '',
       suggested_vendor_2: '',
       suggested_vendor_3: '',
+      vat_rate: 10,
     };
   } else {
     initialState = null as unknown as Record<string, unknown>;
@@ -834,7 +837,14 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
                   <tr><td colspan="7" class="px-2 py-1.5 text-right text-slate-600">Cộng tiền hàng</td>
                     <td class="px-2 py-1.5 text-right font-medium" x-text="fmtVnd(prTotals.subtotal) + ' VND'"></td>
                     <td colspan="2"></td></tr>
-                  <tr><td colspan="7" class="px-2 py-1.5 text-right text-slate-600">VAT 10%</td>
+                  <tr><td colspan="7" class="px-2 py-1.5 text-right text-slate-600">
+                      VAT
+                      <select x-model.number="form.vat_rate" class="border border-slate-300 rounded px-1.5 py-0.5 text-sm ml-1">
+                        <option value="0">0%</option>
+                        <option value="8">8%</option>
+                        <option value="10">10%</option>
+                      </select>
+                    </td>
                     <td class="px-2 py-1.5 text-right font-medium" x-text="fmtVnd(prTotals.vat) + ' VND'"></td>
                     <td colspan="2"></td></tr>
                   <tr class="border-t border-slate-200"><td colspan="7" class="px-2 py-1.5 text-right font-semibold">Tổng cộng (đã VAT)</td>
@@ -895,6 +905,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
             suggested_vendor_1: '',
             suggested_vendor_2: '',
             suggested_vendor_3: '',
+            vat_rate: 10,
             pr_items: [{ item_name: '', spec: '', unit: '', qty_stock: 0, qty_buy: 0, unit_price: 0, purpose: '' }],
           },
           fmtVnd(n) {
@@ -933,7 +944,9 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
               const q = +it.qty_buy || 0, p = +it.unit_price || 0;
               return s + Math.round(q * p);
             }, 0);
-            const vat = Math.round(subtotal * 0.1);
+            let rate = +this.form.vat_rate;
+            if (rate !== 0 && rate !== 8 && rate !== 10) rate = 10;
+            const vat = Math.round(subtotal * rate / 100);
             return { subtotal, vat, total: subtotal + vat };
           },
           addItem() { this.form.items.push({ content: '', note: '' }); },
@@ -954,6 +967,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
                 suggested_vendor_1: (this.form.suggested_vendor_1 || '').trim() || null,
                 suggested_vendor_2: (this.form.suggested_vendor_2 || '').trim() || null,
                 suggested_vendor_3: (this.form.suggested_vendor_3 || '').trim() || null,
+                vat_rate: this.form.vat_rate,
                 items: this.form.pr_items
                   .filter(it => (it.item_name || '').trim())
                   .map((it, idx) => ({
@@ -1059,7 +1073,7 @@ export function proposalDetailPage(
   const needEn = isPr && Number(proposal.engineering_required ?? 0) === 1;
 
   const canSubmit = isOwner && status === 'draft';
-  const canEdit = isOwner && ['draft', 'submitted', 'rejected'].includes(status);
+  const canEdit = isOwner && ['draft', 'submitted'].includes(status);
   const canCancel = isOwner && ['draft', 'submitted'].includes(status);
   const canManagerAct = isManagerOf && status === 'submitted';
   const canEngineeringAct = isPr && needEn && isEnOf && status === 'manager_approved';
@@ -1110,7 +1124,7 @@ export function proposalDetailPage(
             <tfoot class="bg-slate-50">
               <tr><td colspan="6" class="px-2 py-1.5 text-right text-slate-600">Cộng tiền hàng</td>
                 <td class="px-2 py-1.5 text-right font-medium">${fmtVnd(proposal.subtotal)} VND</td><td></td></tr>
-              <tr><td colspan="6" class="px-2 py-1.5 text-right text-slate-600">VAT 10%</td>
+              <tr><td colspan="6" class="px-2 py-1.5 text-right text-slate-600">VAT ${String(proposal.vat_rate ?? 10)}%</td>
                 <td class="px-2 py-1.5 text-right font-medium">${fmtVnd(proposal.vat_amount)} VND</td><td></td></tr>
               <tr class="border-t border-slate-200">
                 <td colspan="6" class="px-2 py-1.5 text-right font-semibold">Tổng cộng (đã VAT)</td>
@@ -1217,29 +1231,17 @@ export function proposalDetailPage(
             : '✓ Duyệt';
       return html`
         <div class="space-y-2">
-          <div class="flex gap-2" x-show="!rejectMode">
-            <button @click="_do('${actionRole}', 'approve', '')" :disabled="busy"
+          <textarea x-model="comment" rows="2" placeholder="Ghi chú / lý do (không bắt buộc)…"
+            class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
+          <div class="flex gap-2">
+            <button @click="_do('${actionRole}', 'approve', comment)" :disabled="busy"
               class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">
               ${approveLabel}
             </button>
-            <button @click="rejectMode = true"
-              class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium">
+            <button @click="confirm('Từ chối phiếu này? Phiếu sẽ bị huỷ và KHÔNG sửa lại được.') && _do('${actionRole}', 'reject', comment)" :disabled="busy"
+              class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium disabled:opacity-50">
               ✗ Từ chối
             </button>
-          </div>
-          <div class="space-y-2" x-show="rejectMode" x-cloak>
-            <textarea x-model="comment" rows="2" placeholder="Lý do từ chối…"
-              class="w-full px-3 py-2 border border-slate-300 rounded text-sm"></textarea>
-            <div class="flex gap-2">
-              <button @click="comment.trim() && _do('${actionRole}', 'reject', comment)" :disabled="busy"
-                class="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded text-sm font-medium disabled:opacity-50">
-                Xác nhận từ chối
-              </button>
-              <button @click="rejectMode = false; comment = ''"
-                class="px-4 py-2 border border-slate-300 rounded text-sm hover:bg-slate-50">
-                Huỷ
-              </button>
-            </div>
           </div>
         </div>`;
     }

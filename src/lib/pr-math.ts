@@ -1,7 +1,8 @@
 // Phép tính subtotal/VAT/total cho phiếu mua hàng (PR).
 // Snapshot khi submit để giữ giá trị immutable nếu sau này sửa item.
 
-export const VAT_RATE = 0.1; // 10% chuẩn AVPG (form AVPG-IC-P4-F1)
+export const DEFAULT_VAT_RATE = 10; // % — mặc định khi không chỉ định
+export const ALLOWED_VAT_RATES = [0, 8, 10]; // % user được chọn (nhập tay qua dropdown)
 export const QUOTE_THRESHOLD_VND = 5_000_000; // Hàng ≥5tr cần 3 báo giá (QD1 Điều 8)
 
 export type PrItemForCalc = {
@@ -16,14 +17,18 @@ export function lineTotal(item: PrItemForCalc): number {
   return Math.round(qty * price);
 }
 
-/** Subtotal + VAT + total từ danh sách item. */
-export function calcPrTotals(items: PrItemForCalc[]): {
+/** Subtotal + VAT + total từ danh sách item, với thuế suất % (mặc định 10). */
+export function calcPrTotals(
+  items: PrItemForCalc[],
+  vatRatePercent: number = DEFAULT_VAT_RATE,
+): {
   subtotal: number;
   vat: number;
   total: number;
 } {
+  const rate = ALLOWED_VAT_RATES.includes(vatRatePercent) ? vatRatePercent : DEFAULT_VAT_RATE;
   const subtotal = items.reduce((s, it) => s + lineTotal(it), 0);
-  const vat = Math.round(subtotal * VAT_RATE);
+  const vat = Math.round((subtotal * rate) / 100);
   return { subtotal, vat, total: subtotal + vat };
 }
 

@@ -47,6 +47,40 @@ export async function webAuditContext(
   return { ip, userAgent, sessionRef };
 }
 
+export type AutoSkipItem = { step: string; email: string; name: string; reason: string };
+
+// Ghi các bước "tự duyệt" (proposer trùng vai trò cấp sau) — đi kèm hành động chính.
+// ctx = ngữ cảnh request (web: từ webAuditContext; telegram: để null + truyền telegramChatId).
+export async function logAutoSkips(
+  env: Bindings,
+  ctx: { ip: string | null; userAgent: string | null; sessionRef: string | null },
+  base: {
+    proposalId: number;
+    actorUserId: string | null;
+    channel: 'web' | 'telegram';
+    telegramChatId?: string | null;
+  },
+  items: AutoSkipItem[],
+): Promise<void> {
+  for (const a of items) {
+    await logAudit(env, {
+      eventType: 'auto_approve',
+      actorEmail: a.email,
+      actorName: a.name,
+      actorUserId: base.actorUserId,
+      proposalId: base.proposalId,
+      step: a.step,
+      action: 'approve',
+      channel: base.channel,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent,
+      sessionRef: ctx.sessionRef,
+      telegramChatId: base.telegramChatId ?? null,
+      detail: JSON.stringify({ reason: a.reason, autoSkip: true }),
+    });
+  }
+}
+
 // Ghi 1 bản ghi audit. Best-effort: lỗi ghi KHÔNG chặn workflow nhưng log ra console
 // (đầy đủ event) để còn truy lại được từ log app nếu DB chặn/ lỗi.
 export async function logAudit(env: Bindings, e: AuditEvent): Promise<void> {

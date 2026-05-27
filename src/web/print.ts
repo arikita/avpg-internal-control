@@ -303,6 +303,7 @@ function printPurchasePage(
   const deliveryDate = (proposal.delivery_date as string) ?? '';
   const subtotal = Number(proposal.subtotal ?? 0);
   const vatAmount = Number(proposal.vat_amount ?? 0);
+  const vatRate = Number(proposal.vat_rate ?? 10);
   const totalAmount = Number(proposal.total_amount ?? 0);
   const reason = (proposal.reason as string) ?? '';
   const title = (proposal.title as string) ?? '';
@@ -492,7 +493,7 @@ function printPurchasePage(
             )
           : html`<tr><td colspan="12" style="text-align:center; font-style:italic; color:#888;">(Chưa có hạng mục)</td></tr>`}
         <tr class="totals-row">
-          <td colspan="9" style="text-align:right;">Thuế VAT 10%/<i>10% VAT Tax</i></td>
+          <td colspan="9" style="text-align:right;">Thuế VAT ${vatRate}%/<i>${vatRate}% VAT Tax</i></td>
           <td class="num">${formatVnd(vatAmount)} VND</td>
           <td colspan="2"></td>
         </tr>

@@ -11,9 +11,9 @@ import { badRequest, forbidden, notFound, unprocessable } from '../lib/errors';
 import { nextProposalCode } from '../lib/codes';
 import { getActiveBod, getActiveEngineering, getActiveIc, getDeptManager } from '../lib/routing';
 import { enqueueNotification, type NotificationEvent } from '../lib/notifications';
-import { calcPrTotals, lineTotal } from '../lib/pr-math';
+import { calcPrTotals, lineTotal, DEFAULT_VAT_RATE, ALLOWED_VAT_RATES } from '../lib/pr-math';
 import { nowIso } from '../lib/time';
-import { logAudit, webAuditContext } from '../lib/audit';
+import { logAudit, webAuditContext, logAutoSkips, type AutoSkipItem } from '../lib/audit';
 
 export const proposalRoutes = new Hono<AppEnv>();
 proposalRoutes.use('*', requireAuth);
@@ -50,6 +50,7 @@ type ProposalRow = {
   subtotal: number | null;
   vat_amount: number | null;
   total_amount: number | null;
+  vat_rate: number;
   rejected_reason: string | null;
   created_at: string;
   submitted_at: string | null;
@@ -189,7 +190,11 @@ async function notifyApprover(
 }
 
 // Validate items theo proposal_type. Trả về totals (PR) hoặc null (general).
-function validateAndCalcPr(items: ItemInput[]): { subtotal: number; vat: number; total: number } {
+function validateAndCalcPr(
+  items: ItemInput[],
+  vatRate: number,
+): { subtotal: number; vat: number; total: number } {
+  if (!ALLOWED_VAT_RATES.includes(vatRate)) throw badRequest('VAT chỉ được 0%, 8% hoặc 10%');
   if (!items.length) throw badRequest('Phiếu mua hàng phải có ít nhất 1 hạng mục');
   for (const it of items) {
     if (!it.item_name || !it.item_name.trim()) {
@@ -204,7 +209,10 @@ function validateAndCalcPr(items: ItemInput[]): { subtotal: number; vat: number;
       throw badRequest(`Đơn giá phải > 0 (hạng mục "${it.item_name}")`);
     }
   }
-  return calcPrTotals(items.map((it) => ({ qty_buy: it.qty_buy, unit_price: it.unit_price })));
+  return calcPrTotals(
+    items.map((it) => ({ qty_buy: it.qty_buy, unit_price: it.unit_price })),
+    vatRate,
+  );
 }
 
 // ---- POST /api/proposals → create draft ----
@@ -229,6 +237,7 @@ proposalRoutes.post('/', async (c) => {
     suggested_vendor_1?: string | null;
     suggested_vendor_2?: string | null;
     suggested_vendor_3?: string | null;
+    vat_rate?: number;
   }>();
 
   const proposalType: 'general' | 'purchase' = body.proposal_type === 'purchase' ? 'purchase' : 'general';
@@ -244,6 +253,7 @@ proposalRoutes.post('/', async (c) => {
   let subtotal: number | null = null;
   let vat: number | null = null;
   let total: number | null = null;
+  let vatRate = DEFAULT_VAT_RATE;
   let deliveryDate: string | null = null;
   let engineeringRequired = 0;
 
@@ -253,8 +263,9 @@ proposalRoutes.post('/', async (c) => {
       throw badRequest('Ngày cần giao phải đúng định dạng DD/MM/YYYY');
     }
     engineeringRequired = body.engineering_required ? 1 : 0;
+    vatRate = body.vat_rate != null ? Number(body.vat_rate) : DEFAULT_VAT_RATE;
     const items = body.items ?? [];
-    const totals = validateAndCalcPr(items);
+    const totals = validateAndCalcPr(items, vatRate);
     subtotal = totals.subtotal;
     vat = totals.vat;
     total = totals.total;
@@ -266,8 +277,8 @@ proposalRoutes.post('/', async (c) => {
         title, reason, explanation, required_time,
         engineering_required, delivery_date,
         suggested_vendor_1, suggested_vendor_2, suggested_vendor_3,
-        subtotal, vat_amount, total_amount)
-     VALUES ('draft', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)`,
+        subtotal, vat_amount, total_amount, vat_rate)
+     VALUES ('draft', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)`,
   )
     .bind(
       proposalType,
@@ -287,6 +298,7 @@ proposalRoutes.post('/', async (c) => {
       subtotal,
       vat,
       total,
+      vatRate,
     )
     .run();
   const proposalId = Number(res.meta.last_row_id);
@@ -378,9 +390,11 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
   const user = c.get('user');
   const row = await loadProposal(c, id);
   assertOwner(row, user.id);
-  const editable = ['draft', 'submitted', 'rejected'];
+  // Chỉ sửa được khi CHƯA có bước phê duyệt nào: draft (nháp) hoặc submitted (chưa ai duyệt).
+  // Đã có approve/reject (gồm rejected) → khóa sửa; muốn làm lại phải tạo phiếu mới.
+  const editable = ['draft', 'submitted'];
   if (!editable.includes(row.status)) {
-    throw unprocessable('Phiếu không thể sửa ở trạng thái hiện tại');
+    throw unprocessable('Phiếu đã vào quy trình duyệt, không sửa được. Tạo phiếu mới nếu cần.');
   }
 
   const body = await c.req.json<{
@@ -395,6 +409,7 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
     suggested_vendor_1?: string | null;
     suggested_vendor_2?: string | null;
     suggested_vendor_3?: string | null;
+    vat_rate?: number;
   }>();
 
   const isPr = row.proposal_type === 'purchase';
@@ -405,6 +420,7 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
   let subtotal: number | null = null;
   let vat: number | null = null;
   let total: number | null = null;
+  let vatRate: number | null = null;
   let deliveryDate: string | null | undefined = undefined;
   let engineeringRequired: number | null | undefined = undefined;
   let vendor1: string | null | undefined = undefined;
@@ -425,9 +441,12 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
     if (body.suggested_vendor_2 !== undefined) vendor2 = body.suggested_vendor_2 ?? null;
     if (body.suggested_vendor_3 !== undefined) vendor3 = body.suggested_vendor_3 ?? null;
 
-    // Items thay đổi → re-calc totals + snapshot.
+    // VAT do user chọn (0/8/10); không gửi thì giữ giá trị cũ của phiếu.
+    const effRate = body.vat_rate != null ? Number(body.vat_rate) : (row.vat_rate ?? DEFAULT_VAT_RATE);
+    if (body.vat_rate != null) vatRate = effRate;
+    // Items thay đổi → re-calc totals + snapshot (theo thuế suất hiện hành).
     if (body.items) {
-      const totals = validateAndCalcPr(body.items);
+      const totals = validateAndCalcPr(body.items, effRate);
       subtotal = totals.subtotal;
       vat = totals.vat;
       total = totals.total;
@@ -448,7 +467,8 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
             subtotal = COALESCE(?15, subtotal),
             vat_amount = COALESCE(?16, vat_amount),
             total_amount = COALESCE(?17, total_amount),
-            status = CASE WHEN status IN ('submitted','rejected') THEN 'draft' ELSE status END,
+            vat_rate = COALESCE(?18, vat_rate),
+            status = CASE WHEN status IN ('submitted') THEN 'draft' ELSE status END,
             rejected_reason = NULL,
             manager_acted_at = NULL,
             engineering_acted_at = NULL,
@@ -475,6 +495,7 @@ proposalRoutes.patch('/:id{[0-9]+}', async (c) => {
       subtotal,
       vat,
       total,
+      vatRate,
     )
     .run();
   if (body.items) await replaceItems(c.env, id, body.items, row.proposal_type);
@@ -698,8 +719,6 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
     throw forbidden('Bạn không phải Trưởng phòng phụ trách phiếu này');
   }
   if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
-  if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
-
   const isPr = row.proposal_type === 'purchase';
   const needEn = isPr && row.engineering_required === 1;
   const now = nowIso();
@@ -759,6 +778,9 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
              VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
           ).bind(id, row.bod_email, row.bod_name),
         ]);
+        await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, [
+          { step: 'bod', email: row.bod_email, name: row.bod_name ?? row.bod_email, reason: 'Tự duyệt do là BGĐ' },
+        ]);
         if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
         if (c.env.KSNB_TELEGRAM_CHAT_ID) {
           await enqueueNotification(c.env, {
@@ -784,6 +806,7 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
   // Auto-skip EN nếu proposer = EN (cần check engineering_email vì routing đã snapshot).
   let curStatus: 'manager_approved' | 'en_approved' | 'ic_approved' | 'completed' = 'manager_approved';
   const extraStmts: D1PreparedStatement[] = [];
+  const autoSkips: AutoSkipItem[] = [];
   const tsNow = now;
 
   if (needEn) {
@@ -795,6 +818,7 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
            VALUES (?1, 'engineering', ?2, ?3, 'approve', 'Tự duyệt do là EN', 'web')`,
         ).bind(id, row.engineering_email, row.engineering_name),
       );
+      autoSkips.push({ step: 'engineering', email: row.engineering_email, name: row.engineering_name ?? row.engineering_email, reason: 'Tự duyệt do là EN' });
     }
   }
   // Sau (en_approved hoặc manager_approved+noEn): check auto-skip IC.
@@ -808,6 +832,7 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
          VALUES (?1, 'ic', ?2, ?3, 'approve', 'Tự duyệt do là IC', 'web')`,
       ).bind(id, row.ic_email, row.ic_name),
     );
+    autoSkips.push({ step: 'ic', email: row.ic_email, name: row.ic_name ?? row.ic_email, reason: 'Tự duyệt do là IC' });
   }
   // BOD auto-skip chỉ khi đã đến ic_approved.
   if (curStatus === 'ic_approved' && row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
@@ -818,6 +843,7 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
          VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
       ).bind(id, row.bod_email, row.bod_name),
     );
+    autoSkips.push({ step: 'bod', email: row.bod_email, name: row.bod_name ?? row.bod_email, reason: 'Tự duyệt do là BGĐ' });
   }
 
   if (curStatus !== 'manager_approved') {
@@ -838,6 +864,9 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
       ),
     );
     await c.env.DB.batch(extraStmts);
+    if (autoSkips.length) {
+      await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, autoSkips);
+    }
   }
 
   // Notify bước kế tiếp.
@@ -882,8 +911,6 @@ proposalRoutes.post('/:id{[0-9]+}/engineering-action', async (c) => {
     throw forbidden('Bạn không phải EN phụ trách phiếu này');
   }
   if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
-  if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
-
   const now = nowIso();
   const newStatus = body.action === 'approve' ? 'en_approved' : 'rejected';
 
@@ -933,6 +960,9 @@ proposalRoutes.post('/:id{[0-9]+}/engineering-action', async (c) => {
          VALUES (?1, 'ic', ?2, ?3, 'approve', 'Tự duyệt do là IC', 'web')`,
       ).bind(id, row.ic_email, row.ic_name),
     ]);
+    await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, [
+      { step: 'ic', email: row.ic_email, name: row.ic_name ?? row.ic_email, reason: 'Tự duyệt do là IC' },
+    ]);
     // Sau ic_approved: tiếp tục check BOD auto-skip.
     if (row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
       const tsBod = nowIso();
@@ -944,6 +974,9 @@ proposalRoutes.post('/:id{[0-9]+}/engineering-action', async (c) => {
           `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
            VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
         ).bind(id, row.bod_email, row.bod_name),
+      ]);
+      await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, [
+        { step: 'bod', email: row.bod_email, name: row.bod_name ?? row.bod_email, reason: 'Tự duyệt do là BGĐ' },
       ]);
       if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
       if (c.env.KSNB_TELEGRAM_CHAT_ID) {
@@ -978,8 +1011,6 @@ proposalRoutes.post('/:id{[0-9]+}/ic-action', async (c) => {
     throw forbidden('Bạn không phải IC phụ trách phiếu này');
   }
   if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
-  if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
-
   const now = nowIso();
   const newStatus = body.action === 'approve' ? 'ic_approved' : 'rejected';
 
@@ -1029,6 +1060,9 @@ proposalRoutes.post('/:id{[0-9]+}/ic-action', async (c) => {
          VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
       ).bind(id, row.bod_email, row.bod_name),
     ]);
+    await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, [
+      { step: 'bod', email: row.bod_email, name: row.bod_name ?? row.bod_email, reason: 'Tự duyệt do là BGĐ' },
+    ]);
     if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
     if (c.env.KSNB_TELEGRAM_CHAT_ID) {
       await enqueueNotification(c.env, {
@@ -1060,8 +1094,6 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
     throw forbidden('Bạn không phải BGĐ phụ trách phiếu này');
   }
   if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
-  if (body.action === 'reject' && !body.comment?.trim()) throw badRequest('Cần ghi lý do từ chối');
-
   const now = nowIso();
   // BOD approve = final → status='completed', set bod_acted_at + completed_at.
   const newStatus = body.action === 'approve' ? 'completed' : 'rejected';

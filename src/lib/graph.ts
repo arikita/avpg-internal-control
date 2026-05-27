@@ -56,3 +56,35 @@ export async function graphSendMail(env: Bindings, args: SendMailArgs): Promise<
   const text = await res.text();
   return { ok: false, error: `Graph sendMail ${res.status}: ${text.slice(0, 500)}` };
 }
+
+export type GraphUser = { email: string; name: string };
+
+// Search user trong directory để admin gán approver. App token (User.Read.All — đã có cho account-sync).
+// startswith trên displayName/mail/UPN, chỉ account đang bật, top 15.
+export async function graphSearchUsers(env: Bindings, query: string): Promise<GraphUser[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  const token = await getCachedAppToken(env);
+  const esc = q.replace(/'/g, "''");
+  const filter =
+    `accountEnabled eq true and (startswith(displayName,'${esc}')` +
+    ` or startswith(mail,'${esc}') or startswith(userPrincipalName,'${esc}'))`;
+  const url =
+    'https://graph.microsoft.com/v1.0/users?$count=true&$select=displayName,mail,userPrincipalName&$top=15&$filter=' +
+    encodeURIComponent(filter);
+  // ConsistencyLevel: eventual + $count → cho phép startswith kết hợp 'or' nhiều thuộc tính.
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' },
+  });
+  if (res.status === 401) await env.KV.delete(TOKEN_CACHE_KEY);
+  if (!res.ok) return [];
+  const json = (await res.json()) as {
+    value?: Array<{ displayName?: string; mail?: string; userPrincipalName?: string }>;
+  };
+  return (json.value ?? [])
+    .map((u) => ({
+      email: (u.mail ?? u.userPrincipalName ?? '').toLowerCase(),
+      name: u.displayName ?? u.mail ?? u.userPrincipalName ?? '',
+    }))
+    .filter((u) => u.email);
+}

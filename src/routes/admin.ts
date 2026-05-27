@@ -8,7 +8,8 @@ import type { AppEnv } from '../types';
 import { requireAdmin } from '../middleware/auth';
 import { runNotificationQueue } from '../lib/notifications';
 import { renderEmail } from '../lib/email-templates';
-import { notFound } from '../lib/errors';
+import { badRequest, notFound } from '../lib/errors';
+import { graphSearchUsers } from '../lib/graph';
 
 export const adminRoutes = new Hono<AppEnv>();
 adminRoutes.use('*', requireAdmin);
@@ -191,5 +192,227 @@ function auditPage(rows: AuditRow[], f: { proposal: string; actor: string; limit
     </tbody>
   </table>`}
   <p style="color:#94a3b8;margin-top:10px">${String(rows.length)} bản ghi · giờ UTC · IP lấy từ CF-Connecting-IP</p>
+</body></html>`;
+}
+
+// ---------- Cấu hình người duyệt (approvers) ----------
+const MEMBER_TABLES: Record<string, string> = {
+  bod: 'bod_members',
+  engineering: 'engineering_members',
+  ic: 'ic_members',
+};
+
+// Data cho trang: phòng + TP hiện tại, và 3 nhóm member.
+adminRoutes.get('/approvers/data', async (c) => {
+  const depts = await c.env.DB.prepare(
+    `SELECT d.code, d.full_name,
+            (SELECT m.user_email FROM department_managers m
+              WHERE m.dept_code = d.code AND m.is_active = 1 ORDER BY m.id ASC LIMIT 1) AS mgr_email,
+            (SELECT m.user_name FROM department_managers m
+              WHERE m.dept_code = d.code AND m.is_active = 1 ORDER BY m.id ASC LIMIT 1) AS mgr_name
+       FROM departments d WHERE d.is_active = 1 ORDER BY d.code`,
+  ).all();
+  const members = async (t: string) =>
+    (
+      await c.env.DB.prepare(
+        `SELECT id, user_email, user_name FROM ${t} WHERE is_active = 1 ORDER BY routing_order ASC, id ASC`,
+      ).all()
+    ).results ?? [];
+  return c.json({
+    departments: depts.results ?? [],
+    bod: await members('bod_members'),
+    engineering: await members('engineering_members'),
+    ic: await members('ic_members'),
+  });
+});
+
+// Search user từ M365 (Graph).
+adminRoutes.get('/users/search', async (c) => {
+  const users = await graphSearchUsers(c.env, c.req.query('q') ?? '');
+  return c.json({ users });
+});
+
+// Gán/đổi TP cho 1 phòng (deactivate active cũ → insert mới, giữ history).
+adminRoutes.post('/approvers/manager', async (c) => {
+  const body = await c.req.json<{ dept_code?: string; email?: string; name?: string }>();
+  const deptCode = (body.dept_code ?? '').trim();
+  const email = (body.email ?? '').trim().toLowerCase();
+  const name = (body.name ?? '').trim();
+  if (!deptCode || !email || !name) throw badRequest('Thiếu dept_code/email/name');
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE department_managers SET is_active = 0 WHERE dept_code = ?1 AND is_active = 1`,
+    ).bind(deptCode),
+    c.env.DB.prepare(
+      `INSERT INTO department_managers (dept_code, user_email, user_name, is_active) VALUES (?1, ?2, ?3, 1)`,
+    ).bind(deptCode, email, name),
+  ]);
+  return c.json({ ok: true });
+});
+
+// Thêm member BGĐ/EN/IC (upsert active theo user_email UNIQUE).
+adminRoutes.post('/approvers/member', async (c) => {
+  const body = await c.req.json<{ role?: string; email?: string; name?: string }>();
+  const table = MEMBER_TABLES[body.role ?? ''];
+  const email = (body.email ?? '').trim().toLowerCase();
+  const name = (body.name ?? '').trim();
+  if (!table) throw badRequest('role không hợp lệ');
+  if (!email || !name) throw badRequest('Thiếu email/name');
+  await c.env.DB.prepare(
+    `INSERT INTO ${table} (user_email, user_name, is_active) VALUES (?1, ?2, 1)
+     ON CONFLICT(user_email) DO UPDATE SET is_active = 1, user_name = excluded.user_name`,
+  )
+    .bind(email, name)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Gỡ (deactivate) — kind = 'manager' | 'bod' | 'engineering' | 'ic'.
+adminRoutes.post('/approvers/remove', async (c) => {
+  const body = await c.req.json<{ kind?: string; id?: number }>();
+  const id = Number(body.id);
+  if (!id) throw badRequest('Thiếu id');
+  const table = body.kind === 'manager' ? 'department_managers' : MEMBER_TABLES[body.kind ?? ''];
+  if (!table) throw badRequest('kind không hợp lệ');
+  await c.env.DB.prepare(`UPDATE ${table} SET is_active = 0 WHERE id = ?1`)
+    .bind(id)
+    .run();
+  return c.json({ ok: true });
+});
+
+// Trang HTML quản lý approver.
+adminRoutes.get('/approvers', (c) => c.html(approversPage()));
+
+function approversPage() {
+  return html`<!doctype html>
+<html lang="vi"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cấu hình người duyệt — AVPG</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+<style>[x-cloak]{display:none!important}</style>
+</head>
+<body class="bg-slate-50 text-slate-900 p-6" x-data="approvers()" x-init="load()">
+  <h1 class="text-lg font-semibold mb-1">👥 Cấu hình người duyệt</h1>
+  <p class="text-sm text-slate-500 mb-5">Gán Trưởng phòng cho từng phòng + thành viên BGĐ / Kỹ thuật / KSNB. Tìm người trực tiếp từ M365.</p>
+
+  <div x-show="picker.open" x-cloak class="fixed inset-0 bg-black/30 flex items-start justify-center pt-24 z-50" @click.self="picker.open=false">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-4">
+      <div class="text-sm font-medium mb-2" x-text="picker.title"></div>
+      <input x-model="picker.q" @input.debounce.300ms="search()" type="text"
+        placeholder="Gõ tên hoặc email (≥2 ký tự)…" class="w-full px-3 py-2 border border-slate-300 rounded text-sm" />
+      <div class="mt-2 max-h-72 overflow-auto divide-y divide-slate-100">
+        <template x-for="u in picker.results" :key="u.email">
+          <button @click="choose(u)" class="w-full text-left px-2 py-2 hover:bg-blue-50 rounded">
+            <div class="text-sm font-medium" x-text="u.name"></div>
+            <div class="text-xs text-slate-500" x-text="u.email"></div>
+          </button>
+        </template>
+        <div x-show="picker.busy" class="text-sm text-slate-400 py-3 text-center">Đang tìm…</div>
+        <div x-show="!picker.busy && picker.q.length>=2 && picker.results.length===0" class="text-sm text-slate-400 py-3 text-center">Không thấy ai khớp.</div>
+      </div>
+      <button @click="picker.open=false" class="mt-3 text-sm text-slate-500">Đóng</button>
+    </div>
+  </div>
+
+  <div x-show="loading" class="text-sm text-slate-500">Đang tải…</div>
+
+  <div x-show="!loading" class="space-y-6">
+    <section class="bg-white border border-slate-200 rounded-lg p-4">
+      <h2 class="text-sm font-semibold mb-3">Trưởng phòng (theo phòng)</h2>
+      <table class="w-full text-sm">
+        <thead><tr class="text-left text-xs text-slate-500"><th class="py-1">Phòng</th><th>Trưởng phòng hiện tại</th><th class="w-24"></th></tr></thead>
+        <tbody>
+          <template x-for="d in departments" :key="d.code">
+            <tr class="border-t border-slate-100">
+              <td class="py-2"><span class="font-mono text-xs" x-text="d.code"></span> · <span x-text="d.full_name"></span></td>
+              <td><span x-show="d.mgr_email" x-text="(d.mgr_name||'')+' ('+(d.mgr_email||'')+')'"></span><span x-show="!d.mgr_email" class="text-rose-500">— chưa gán —</span></td>
+              <td><button @click="openPicker('manager', d.code, 'TP phòng '+d.code)" class="text-blue-700 hover:underline">Đổi/Gán</button></td>
+            </tr>
+          </template>
+          <tr x-show="departments.length===0"><td colspan="3" class="py-3 text-slate-400">Chưa có phòng nào (seed bảng departments trước).</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <template x-for="grp in groups" :key="grp.role">
+      <section class="bg-white border border-slate-200 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold" x-text="grp.label"></h2>
+          <button @click="openPicker(grp.role, null, 'Thêm '+grp.label)" class="text-sm text-blue-700 hover:underline">+ Thêm</button>
+        </div>
+        <ul class="text-sm divide-y divide-slate-100">
+          <template x-for="m in grp.items" :key="m.id">
+            <li class="flex items-center justify-between py-2">
+              <span x-text="m.user_name+' ('+m.user_email+')'"></span>
+              <button @click="removeMember(grp.role, m.id)" class="text-rose-600 hover:underline text-xs">Gỡ</button>
+            </li>
+          </template>
+          <li x-show="grp.items.length===0" class="py-2 text-slate-400">— chưa có ai —</li>
+        </ul>
+        <p class="text-xs text-slate-400 mt-2">Phiếu được route tới người đầu danh sách.</p>
+      </section>
+    </template>
+  </div>
+
+  <script>
+    function approvers() {
+      return {
+        loading: true,
+        departments: [],
+        groups: [
+          { role: 'bod', label: 'BGĐ (BOD)', items: [] },
+          { role: 'engineering', label: 'Kỹ thuật (EN)', items: [] },
+          { role: 'ic', label: 'KSNB (IC)', items: [] },
+        ],
+        picker: { open: false, kind: '', dept: null, title: '', q: '', results: [], busy: false },
+        async load() {
+          this.loading = true;
+          try {
+            const d = await fetch('/admin/approvers/data').then(function (r) { return r.json(); });
+            this.departments = d.departments || [];
+            this.groups[0].items = d.bod || [];
+            this.groups[1].items = d.engineering || [];
+            this.groups[2].items = d.ic || [];
+          } catch (e) { alert('Lỗi tải: ' + e.message); }
+          finally { this.loading = false; }
+        },
+        openPicker(kind, dept, title) {
+          this.picker = { open: true, kind: kind, dept: dept, title: title, q: '', results: [], busy: false };
+        },
+        async search() {
+          const q = this.picker.q.trim();
+          if (q.length < 2) { this.picker.results = []; return; }
+          this.picker.busy = true;
+          try {
+            const r = await fetch('/admin/users/search?q=' + encodeURIComponent(q)).then(function (r) { return r.json(); });
+            this.picker.results = r.users || [];
+          } catch (e) { this.picker.results = []; }
+          finally { this.picker.busy = false; }
+        },
+        async choose(u) {
+          try {
+            if (this.picker.kind === 'manager') {
+              await this._post('/admin/approvers/manager', { dept_code: this.picker.dept, email: u.email, name: u.name });
+            } else {
+              await this._post('/admin/approvers/member', { role: this.picker.kind, email: u.email, name: u.name });
+            }
+            this.picker.open = false;
+            await this.load();
+          } catch (e) { alert('Lỗi: ' + e.message); }
+        },
+        async removeMember(role, id) {
+          if (!confirm('Gỡ người này khỏi danh sách duyệt?')) return;
+          try { await this._post('/admin/approvers/remove', { kind: role, id: id }); await this.load(); }
+          catch (e) { alert('Lỗi: ' + e.message); }
+        },
+        async _post(url, body) {
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+          return r.json();
+        },
+      };
+    }
+  </script>
 </body></html>`;
 }

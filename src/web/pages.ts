@@ -272,10 +272,13 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
       // ----- Xử lý ảnh chữ ký phía client (Canvas) -----
       // Pen-ink xanh bút bi royal #1A3E8C — đổi 3 số RGB nếu muốn màu mực khác.
       var SIG_INK = { r: 26, g: 62, b: 140 };
-      var SIG_LO = 95;          // luminance <= LO  -> nét đậm, đục hoàn toàn (alpha 255)
-      var SIG_HI = 200;         // luminance >= HI  -> nền giấy, trong suốt hoàn toàn (alpha 0)
-      var SIG_MAX_DIM = 1200;   // thu cạnh dài nhất về <= giá trị này
-      var SIG_TRIM_A = 12;      // alpha tối thiểu coi là "có mực" khi crop nền
+      var SIG_LO = 95;            // luminance <= LO  -> nét đậm, đục hoàn toàn (alpha 255)
+      var SIG_HI = 200;           // luminance >= HI  -> nền giấy, trong suốt hoàn toàn (alpha 0)
+      var SIG_ALPHA_FLOOR = 65;   // alpha tính ra < ngưỡng này -> ép 0 (xoá nhiễu nền/bóng ảnh chụp)
+      var SIG_MAX_DIM = 1000;     // thu cạnh dài nhất về <= giá trị này
+      var SIG_MIN_DIM = 480;      // sàn khi phải hạ độ phân giải để giảm dung lượng
+      var SIG_MAX_BYTES = 300 * 1024; // PNG ra phải <= ngưỡng này (khớp giới hạn server)
+      var SIG_TRIM_A = 0;         // sau khi ép nhiễu về 0, mọi alpha>0 là "có mực" -> crop sát nét
 
       function sigLoadViaImg(file) {
         return new Promise(function (resolve, reject) {
@@ -325,6 +328,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             if (lum <= SIG_LO) a = 255;            // nét -> đục
             else if (lum >= SIG_HI) a = 0;         // nền -> trong suốt
             else a = Math.round(255 * (SIG_HI - lum) / span); // viền nét: alpha mượt
+            if (a < SIG_ALPHA_FLOOR) a = 0;        // ép nhiễu nền/bóng/viền mờ về trong suốt hẳn
             d[i] = SIG_INK.r; d[i + 1] = SIG_INK.g; d[i + 2] = SIG_INK.b; d[i + 3] = a;
             if (a > SIG_TRIM_A) {
               if (x < minX) minX = x;
@@ -352,9 +356,9 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
 
         var blob = await new Promise(function (resolve) { out.toBlob(resolve, 'image/png'); });
         if (!blob) throw new Error('Không tạo được PNG');
-        // Còn nặng (>195KB) thì hạ độ phân giải rồi thử lại, tránh vượt giới hạn server.
-        if (blob.size > 195 * 1024 && maxDim > 600) {
-          return processSignatureImage(file, Math.round(maxDim * 0.8));
+        // Còn nặng thì hạ độ phân giải rồi thử lại, tránh vượt giới hạn server.
+        if (blob.size > SIG_MAX_BYTES && maxDim > SIG_MIN_DIM) {
+          return processSignatureImage(file, Math.max(SIG_MIN_DIM, Math.round(maxDim * 0.8)));
         }
         return blob;
       }
@@ -455,8 +459,8 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             try {
               // Tự xử lý: xóa nền trắng, làm nét, ép mực xanh, xuất PNG nền trong suốt.
               const png = await processSignatureImage(file);
-              if (png.size > 200 * 1024) {
-                throw new Error('Ảnh sau xử lý vẫn >200KB, thử ảnh đơn giản/nhỏ hơn.');
+              if (png.size > 300 * 1024) {
+                throw new Error('Ảnh sau xử lý vẫn quá nặng — nền nhiều nhiễu/bóng. Hãy chụp/scan chữ ký trên giấy trắng, đủ sáng, ít bóng.');
               }
               const fd = new FormData();
               fd.append('file', png, 'signature.png');

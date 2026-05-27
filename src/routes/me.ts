@@ -9,7 +9,7 @@ export const meRoutes = new Hono<AppEnv>();
 meRoutes.use('*', requireAuth);
 
 const LINK_TOKEN_TTL_SEC = 10 * 60;
-const SIGNATURE_MAX_BYTES = 200 * 1024; // 200KB raw image
+const SIGNATURE_MAX_BYTES = 300 * 1024; // 300KB raw image (đã xử lý nền trong suốt phía client)
 const SIGNATURE_ALLOWED_TYPES = ['image/png', 'image/jpeg'];
 
 // POST /api/me/link-token → sinh token để dùng với /link <token> trên bot.

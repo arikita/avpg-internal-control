@@ -546,6 +546,7 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   let finalStatus: PrStatus = 'submitted';
   const stmts: D1PreparedStatement[] = [];
 
+  const autoApproved: Array<{ step: string; email: string; name: string; comment: string }> = [];
   const insertApproval = (step: string, email: string, name: string, comment: string) => {
     stmts.push(
       c.env.DB.prepare(
@@ -553,6 +554,7 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
          VALUES (?1, ?2, ?3, ?4, 'approve', ?5, 'web')`,
       ).bind(id, step, email, name, comment),
     );
+    autoApproved.push({ step, email, name, comment });
   };
 
   if (proposerIsManager) {
@@ -617,6 +619,40 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
     ),
   );
   await c.env.DB.batch(stmts);
+
+  // Audit: ghi sự kiện submit + mỗi bước auto-approve (proposer trùng vai trò) — vì các
+  // bước này KHÔNG đi qua *-action nên phải log tại đây cho đủ vết phê duyệt.
+  {
+    const actx = await webAuditContext(c);
+    await logAudit(c.env, {
+      eventType: 'submit',
+      actorEmail: user.email,
+      actorName: user.name,
+      actorUserId: user.id,
+      proposalId: id,
+      channel: 'web',
+      ip: actx.ip,
+      userAgent: actx.userAgent,
+      sessionRef: actx.sessionRef,
+      detail: JSON.stringify({ code, finalStatus }),
+    });
+    for (const a of autoApproved) {
+      await logAudit(c.env, {
+        eventType: 'auto_approve',
+        actorEmail: a.email,
+        actorName: a.name,
+        actorUserId: user.id,
+        proposalId: id,
+        step: a.step,
+        action: 'approve',
+        channel: 'web',
+        ip: actx.ip,
+        userAgent: actx.userAgent,
+        sessionRef: actx.sessionRef,
+        detail: JSON.stringify({ reason: a.comment, viaSubmit: true }),
+      });
+    }
+  }
 
   // Notify bước kế tiếp tuỳ status cuối.
   if (finalStatus === 'submitted') {

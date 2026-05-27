@@ -358,6 +358,26 @@ proposalRoutes.get('/', async (c) => {
               ORDER BY updated_at ASC`;
       bind = [emailLower];
       break;
+    case 'approve_inbox':
+      // Gộp mọi vai trò: phiếu đang chờ CHÍNH user duyệt ở bất kỳ bước nào (TP/EN/IC/BGĐ).
+      // Mỗi phiếu chỉ chờ ở 1 bước nên không trùng dòng.
+      sql = `SELECT * FROM proposals
+              WHERE (
+                (LOWER(manager_email) = ?1 AND status = 'submitted')
+                OR (LOWER(bod_email) = ?1 AND (
+                     (proposal_type = 'general' AND status = 'manager_approved')
+                     OR (proposal_type = 'purchase' AND status = 'ic_approved')
+                   ))
+                OR (LOWER(engineering_email) = ?1 AND proposal_type = 'purchase'
+                    AND engineering_required = 1 AND status = 'manager_approved')
+                OR (LOWER(ic_email) = ?1 AND proposal_type = 'purchase' AND (
+                     (engineering_required = 0 AND status = 'manager_approved')
+                     OR (engineering_required = 1 AND status = 'en_approved')
+                   ))
+              )
+              ORDER BY updated_at ASC`;
+      bind = [emailLower];
+      break;
     default:
       throw badRequest('scope không hợp lệ');
   }

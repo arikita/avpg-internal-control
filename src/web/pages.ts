@@ -423,17 +423,13 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           init() { this.rebuildTabs(); },
           rebuildTabs() {
             const arr = [{ key: 'mine', label: 'Phiếu của tôi', count: 0 }];
-            if (this.isManager) {
-              arr.push({ key: 'manager_inbox', label: 'Tôi cần duyệt (TP)', count: this.pendingManager });
-            }
-            if (this.isEngineering) {
-              arr.push({ key: 'engineering_inbox', label: 'Tôi cần duyệt (EN)', count: this.pendingEngineering });
-            }
-            if (this.isIc) {
-              arr.push({ key: 'ic_inbox', label: 'Tôi cần duyệt (IC)', count: this.pendingIc });
-            }
-            if (this.isBod) {
-              arr.push({ key: 'bod_inbox', label: 'Tôi cần duyệt (BGĐ)', count: this.pendingBod });
+            // Gộp mọi vai trò duyệt (TP/EN/IC/BGĐ) thành 1 tab — người đóng nhiều role
+            // không phải nhảy qua lại. Badge = tổng phiếu đang chờ user duyệt.
+            const isApprover = this.isManager || this.isEngineering || this.isIc || this.isBod;
+            if (isApprover) {
+              const pending = (this.pendingManager || 0) + (this.pendingEngineering || 0)
+                + (this.pendingIc || 0) + (this.pendingBod || 0);
+              arr.push({ key: 'approve_inbox', label: 'Phiếu cần duyệt', count: pending });
             }
             this.tabs = arr;
           },

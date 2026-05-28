@@ -9,7 +9,7 @@ import type { AppEnv } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { badRequest, forbidden, notFound, unprocessable } from '../lib/errors';
 import { nextProposalCode } from '../lib/codes';
-import { getActiveBod, getActiveEngineering, getActiveIc, getDeptManager, isKsnbUser } from '../lib/routing';
+import { getActiveBod, getActiveEngineering, getDeptManager, isKsnbUser } from '../lib/routing';
 import { enqueueNotification, type NotificationEvent } from '../lib/notifications';
 import { calcPrTotals, lineTotal, DEFAULT_VAT_RATE, ALLOWED_VAT_RATES } from '../lib/pr-math';
 import { nowIso } from '../lib/time';
@@ -326,12 +326,13 @@ proposalRoutes.get('/', async (c) => {
       bind = [emailLower];
       break;
     case 'bod_inbox':
-      // General: BOD nhận sau manager_approved. PR: BOD nhận sau ic_approved.
+      // General: BOD sau manager_approved. PR: sau en_approved (cần EN) hoặc manager_approved (không).
       sql = `SELECT * FROM proposals
               WHERE LOWER(bod_email) = ?1
                 AND (
                   (proposal_type = 'general' AND status = 'manager_approved')
-                  OR (proposal_type = 'purchase' AND status = 'ic_approved')
+                  OR (proposal_type = 'purchase' AND engineering_required = 1 AND status = 'en_approved')
+                  OR (proposal_type = 'purchase' AND engineering_required = 0 AND status = 'manager_approved')
                 )
               ORDER BY updated_at ASC`;
       bind = [emailLower];
@@ -346,18 +347,7 @@ proposalRoutes.get('/', async (c) => {
               ORDER BY manager_acted_at ASC`;
       bind = [emailLower];
       break;
-    case 'ic_inbox':
-      // PR: IC nhận sau Manager (nếu không cần EN) hoặc sau EN.
-      sql = `SELECT * FROM proposals
-              WHERE LOWER(ic_email) = ?1
-                AND proposal_type = 'purchase'
-                AND (
-                  (engineering_required = 0 AND status = 'manager_approved')
-                  OR (engineering_required = 1 AND status = 'en_approved')
-                )
-              ORDER BY updated_at ASC`;
-      bind = [emailLower];
-      break;
+    // case 'ic_inbox' ĐÃ BỎ — KSNB không còn là bước duyệt.
     case 'approve_inbox':
       // Gộp mọi vai trò: phiếu đang chờ CHÍNH user duyệt ở bất kỳ bước nào (TP/EN/IC/BGĐ).
       // Mỗi phiếu chỉ chờ ở 1 bước nên không trùng dòng.
@@ -366,14 +356,11 @@ proposalRoutes.get('/', async (c) => {
                 (LOWER(manager_email) = ?1 AND status = 'submitted')
                 OR (LOWER(bod_email) = ?1 AND (
                      (proposal_type = 'general' AND status = 'manager_approved')
-                     OR (proposal_type = 'purchase' AND status = 'ic_approved')
+                     OR (proposal_type = 'purchase' AND engineering_required = 1 AND status = 'en_approved')
+                     OR (proposal_type = 'purchase' AND engineering_required = 0 AND status = 'manager_approved')
                    ))
                 OR (LOWER(engineering_email) = ?1 AND proposal_type = 'purchase'
                     AND engineering_required = 1 AND status = 'manager_approved')
-                OR (LOWER(ic_email) = ?1 AND proposal_type = 'purchase' AND (
-                     (engineering_required = 0 AND status = 'manager_approved')
-                     OR (engineering_required = 1 AND status = 'en_approved')
-                   ))
               )
               ORDER BY updated_at ASC`;
       bind = [emailLower];
@@ -581,7 +568,6 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   const manager = await getDeptManager(c.env, row.proposer_dept);
   const bod = await getActiveBod(c.env);
   const en = needEn ? await getActiveEngineering(c.env) : null;
-  const ic = isPr ? await getActiveIc(c.env) : null;
 
   // Re-submit sau khi sửa (PATCH revert về draft): giữ nguyên code đã sinh trước đó.
   const code = row.code ?? (await nextProposalCode(c.env.DB, row.proposer_dept));
@@ -591,12 +577,11 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   const u = user.email.toLowerCase();
   const proposerIsManager = u === manager.email.toLowerCase();
   const proposerIsEn = en !== null && u === en.email.toLowerCase();
-  const proposerIsIc = ic !== null && u === ic.email.toLowerCase();
   const proposerIsBod = u === bod.email.toLowerCase();
 
-  // Tính status cuối + approvals cần insert. Chain: submitted → manager_approved →
-  // (en_approved nếu PR+needEn) → (ic_approved nếu PR) → completed.
-  type PrStatus = 'submitted' | 'manager_approved' | 'en_approved' | 'ic_approved' | 'completed';
+  // Chuỗi mua hàng: submitted → manager_approved → (en_approved nếu PR+needEn) → completed (BGĐ).
+  // KSNB KHÔNG còn là bước duyệt — chỉ follow sau khi completed.
+  type PrStatus = 'submitted' | 'manager_approved' | 'en_approved' | 'completed';
   let finalStatus: PrStatus = 'submitted';
   const stmts: D1PreparedStatement[] = [];
 
@@ -618,14 +603,11 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
       finalStatus = 'en_approved';
       insertApproval('engineering', en.email, en.name, 'Tự duyệt do là EN');
     }
-    if (isPr && proposerIsIc && ic && (!needEn || finalStatus === 'en_approved')) {
-      finalStatus = 'ic_approved';
-      insertApproval('ic', ic.email, ic.name, 'Tự duyệt do là IC');
-    }
-    // BOD auto-approve chỉ khi general (manager_approved) hoặc PR (ic_approved).
+    // BOD auto-approve khi đã tới bước ngay trước BGĐ.
     const eligibleForBodAuto =
       (!isPr && finalStatus === 'manager_approved') ||
-      (isPr && finalStatus === 'ic_approved');
+      (isPr && needEn && finalStatus === 'en_approved') ||
+      (isPr && !needEn && finalStatus === 'manager_approved');
     if (proposerIsBod && eligibleForBodAuto) {
       finalStatus = 'completed';
       insertApproval('bod', bod.email, bod.name, 'Tự duyệt do là BGĐ');
@@ -644,15 +626,10 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
     `updated_at = ?8`,
     `engineering_email = ?9`,
     `engineering_name = ?10`,
-    `ic_email = ?11`,
-    `ic_name = ?12`,
   ];
   if (finalStatus !== 'submitted') setSql.push(`manager_acted_at = ?8`);
-  if (finalStatus === 'en_approved' || finalStatus === 'ic_approved' || finalStatus === 'completed') {
+  if (finalStatus === 'en_approved' || finalStatus === 'completed') {
     if (isPr && needEn) setSql.push(`engineering_acted_at = ?8`);
-  }
-  if (finalStatus === 'ic_approved' || finalStatus === 'completed') {
-    if (isPr) setSql.push(`ic_acted_at = ?8`);
   }
   if (finalStatus === 'completed') setSql.push(`bod_acted_at = ?8`, `completed_at = ?8`);
 
@@ -668,8 +645,6 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
       submittedAt,
       en?.email ?? null,
       en?.name ?? null,
-      ic?.email ?? null,
-      ic?.name ?? null,
     ),
   );
   await c.env.DB.batch(stmts);
@@ -712,18 +687,14 @@ proposalRoutes.post('/:id{[0-9]+}/submit', async (c) => {
   if (finalStatus === 'submitted') {
     await notifyApprover(c.env, id, 'submitted', manager.email);
   } else if (finalStatus === 'manager_approved') {
-    // PR + needEn → EN; PR no-EN → IC; general → BOD.
+    // PR + needEn → EN; còn lại (general, PR no-EN) → BGĐ.
     if (isPr && needEn && en) {
       await notifyApprover(c.env, id, 'manager_approved', en.email);
-    } else if (isPr && ic) {
-      await notifyApprover(c.env, id, 'manager_approved', ic.email);
     } else {
       await notifyApprover(c.env, id, 'manager_approved', bod.email);
     }
-  } else if (finalStatus === 'en_approved' && ic) {
-    await notifyApprover(c.env, id, 'engineering_approved', ic.email);
-  } else if (finalStatus === 'ic_approved') {
-    await notifyApprover(c.env, id, 'ic_approved', bod.email);
+  } else if (finalStatus === 'en_approved') {
+    await notifyApprover(c.env, id, 'engineering_approved', bod.email);
   } else {
     // completed → notify proposer + KSNB group (informational)
     await notifyApprover(c.env, id, 'completed', user.email);
@@ -837,7 +808,7 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
   const proposerEmail = proposer?.email?.toLowerCase() ?? '';
 
   // Auto-skip EN nếu proposer = EN (cần check engineering_email vì routing đã snapshot).
-  let curStatus: 'manager_approved' | 'en_approved' | 'ic_approved' | 'completed' = 'manager_approved';
+  let curStatus: 'manager_approved' | 'en_approved' | 'completed' = 'manager_approved';
   const extraStmts: D1PreparedStatement[] = [];
   const autoSkips: AutoSkipItem[] = [];
   const tsNow = now;
@@ -854,21 +825,9 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
       autoSkips.push({ step: 'engineering', email: row.engineering_email, name: row.engineering_name ?? row.engineering_email, reason: 'Tự duyệt do là EN' });
     }
   }
-  // Sau (en_approved hoặc manager_approved+noEn): check auto-skip IC.
-  const canSkipIc =
-    (!needEn && curStatus === 'manager_approved') || curStatus === 'en_approved';
-  if (canSkipIc && row.ic_email && proposerEmail === row.ic_email.toLowerCase()) {
-    curStatus = 'ic_approved';
-    extraStmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-         VALUES (?1, 'ic', ?2, ?3, 'approve', 'Tự duyệt do là IC', 'web')`,
-      ).bind(id, row.ic_email, row.ic_name),
-    );
-    autoSkips.push({ step: 'ic', email: row.ic_email, name: row.ic_name ?? row.ic_email, reason: 'Tự duyệt do là IC' });
-  }
-  // BOD auto-skip chỉ khi đã đến ic_approved.
-  if (curStatus === 'ic_approved' && row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
+  // BOD auto-skip khi đã tới bước ngay trước BGĐ (en_approved nếu cần EN, hoặc manager_approved nếu không).
+  const atPreBod = (needEn && curStatus === 'en_approved') || (!needEn && curStatus === 'manager_approved');
+  if (atPreBod && row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
     curStatus = 'completed';
     extraStmts.push(
       c.env.DB.prepare(
@@ -882,11 +841,8 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
   if (curStatus !== 'manager_approved') {
     // Update các timestamp + status.
     const setSql = ['status = ?2', 'updated_at = ?3'];
-    if (curStatus === 'en_approved' || curStatus === 'ic_approved' || curStatus === 'completed') {
+    if (curStatus === 'en_approved' || curStatus === 'completed') {
       if (needEn) setSql.push('engineering_acted_at = ?3');
-    }
-    if (curStatus === 'ic_approved' || curStatus === 'completed') {
-      setSql.push('ic_acted_at = ?3');
     }
     if (curStatus === 'completed') setSql.push('bod_acted_at = ?3', 'completed_at = ?3');
     extraStmts.unshift(
@@ -904,16 +860,14 @@ proposalRoutes.post('/:id{[0-9]+}/manager-action', async (c) => {
 
   // Notify bước kế tiếp.
   if (curStatus === 'manager_approved') {
-    // Chuẩn flow: PR + needEn → EN, no-EN → IC.
+    // PR + needEn → EN; PR no-EN → BGĐ.
     if (needEn && row.engineering_email) {
       await notifyApprover(c.env, id, 'manager_approved', row.engineering_email);
-    } else if (row.ic_email) {
-      await notifyApprover(c.env, id, 'manager_approved', row.ic_email);
+    } else if (row.bod_email) {
+      await notifyApprover(c.env, id, 'manager_approved', row.bod_email);
     }
-  } else if (curStatus === 'en_approved' && row.ic_email) {
-    await notifyApprover(c.env, id, 'engineering_approved', row.ic_email);
-  } else if (curStatus === 'ic_approved' && row.bod_email) {
-    await notifyApprover(c.env, id, 'ic_approved', row.bod_email);
+  } else if (curStatus === 'en_approved' && row.bod_email) {
+    await notifyApprover(c.env, id, 'engineering_approved', row.bod_email);
   } else if (curStatus === 'completed') {
     if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
     if (c.env.KSNB_TELEGRAM_CHAT_ID) {
@@ -980,107 +934,7 @@ proposalRoutes.post('/:id{[0-9]+}/engineering-action', async (c) => {
     return c.json({ proposal: await loadProposal(c, id) });
   }
 
-  // Approve → chờ IC. Auto-skip IC nếu proposer là IC.
-  const proposerEmail = proposer?.email?.toLowerCase() ?? '';
-  if (row.ic_email && proposerEmail === row.ic_email.toLowerCase()) {
-    // Skip IC → status='ic_approved'.
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        `UPDATE proposals SET status = 'ic_approved', ic_acted_at = ?2, updated_at = ?2 WHERE id = ?1`,
-      ).bind(id, now),
-      c.env.DB.prepare(
-        `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-         VALUES (?1, 'ic', ?2, ?3, 'approve', 'Tự duyệt do là IC', 'web')`,
-      ).bind(id, row.ic_email, row.ic_name),
-    ]);
-    await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, [
-      { step: 'ic', email: row.ic_email, name: row.ic_name ?? row.ic_email, reason: 'Tự duyệt do là IC' },
-    ]);
-    // Sau ic_approved: tiếp tục check BOD auto-skip.
-    if (row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
-      const tsBod = nowIso();
-      await c.env.DB.batch([
-        c.env.DB.prepare(
-          `UPDATE proposals SET status = 'completed', bod_acted_at = ?2, completed_at = ?2, updated_at = ?2 WHERE id = ?1`,
-        ).bind(id, tsBod),
-        c.env.DB.prepare(
-          `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-           VALUES (?1, 'bod', ?2, ?3, 'approve', 'Tự duyệt do là BGĐ', 'web')`,
-        ).bind(id, row.bod_email, row.bod_name),
-      ]);
-      await logAutoSkips(c.env, await webAuditContext(c), { proposalId: id, actorUserId: user.id, channel: 'web' }, [
-        { step: 'bod', email: row.bod_email, name: row.bod_name ?? row.bod_email, reason: 'Tự duyệt do là BGĐ' },
-      ]);
-      if (proposer) await notifyApprover(c.env, id, 'completed', proposer.email);
-      if (c.env.KSNB_TELEGRAM_CHAT_ID) {
-        await enqueueNotification(c.env, {
-          proposalId: id,
-          channel: 'telegram',
-          event: 'bod_approved',
-          recipient: c.env.KSNB_TELEGRAM_CHAT_ID,
-        });
-      }
-    } else if (row.bod_email) {
-      await notifyApprover(c.env, id, 'ic_approved', row.bod_email);
-    }
-  } else if (row.ic_email) {
-    await notifyApprover(c.env, id, 'engineering_approved', row.ic_email);
-  }
-
-  return c.json({ proposal: await loadProposal(c, id) });
-});
-
-// ---- POST /api/proposals/:id/ic-action (PR-only) ----
-proposalRoutes.post('/:id{[0-9]+}/ic-action', async (c) => {
-  const id = Number(c.req.param('id'));
-  const user = c.get('user');
-  const body = await c.req.json<{ action: 'approve' | 'reject'; comment?: string }>();
-  const row = await loadProposal(c, id);
-
-  if (row.proposal_type !== 'purchase') throw unprocessable('Phiếu không phải mua hàng');
-  const expectedStatus = row.engineering_required === 1 ? 'en_approved' : 'manager_approved';
-  if (row.status !== expectedStatus) throw unprocessable('Phiếu không ở trạng thái chờ IC duyệt');
-  if (!row.ic_email || row.ic_email.toLowerCase() !== user.email.toLowerCase()) {
-    throw forbidden('Bạn không phải IC phụ trách phiếu này');
-  }
-  if (body.action !== 'approve' && body.action !== 'reject') throw badRequest('action không hợp lệ');
-  const now = nowIso();
-  const newStatus = body.action === 'approve' ? 'ic_approved' : 'rejected';
-
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `UPDATE proposals
-          SET status = ?2, ic_acted_at = ?3,
-              rejected_reason = CASE WHEN ?2 = 'rejected' THEN ?4 ELSE rejected_reason END,
-              updated_at = ?3
-        WHERE id = ?1`,
-    ).bind(id, newStatus, now, body.comment ?? null),
-    c.env.DB.prepare(
-      `INSERT INTO approvals (proposal_id, step, actor_email, actor_name, action, comment, source)
-       VALUES (?1, 'ic', ?2, ?3, ?4, ?5, 'web')`,
-    ).bind(id, user.email, user.name, body.action, body.comment ?? null),
-  ]);
-
-  {
-    const actx = await webAuditContext(c);
-    await logAudit(c.env, {
-      eventType: body.action, actorEmail: user.email, actorName: user.name, actorUserId: user.id,
-      proposalId: id, step: 'ic', action: body.action, channel: 'web',
-      ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
-      detail: JSON.stringify({ newStatus, comment: body.comment ?? null }),
-    });
-  }
-
-  const proposer = await c.env.DB.prepare(`SELECT email FROM users WHERE id = ?1`)
-    .bind(row.proposer_user_id)
-    .first<{ email: string }>();
-
-  if (body.action === 'reject') {
-    if (proposer) await notifyApprover(c.env, id, 'rejected', proposer.email);
-    return c.json({ proposal: await loadProposal(c, id) });
-  }
-
-  // Approve → chờ BOD. Auto-skip BOD nếu proposer là BOD.
+  // Approve → chờ BGĐ. Auto-skip BGĐ nếu proposer là BGĐ.
   const proposerEmail = proposer?.email?.toLowerCase() ?? '';
   if (row.bod_email && proposerEmail === row.bod_email.toLowerCase()) {
     const tsBod = nowIso();
@@ -1106,11 +960,15 @@ proposalRoutes.post('/:id{[0-9]+}/ic-action', async (c) => {
       });
     }
   } else if (row.bod_email) {
-    await notifyApprover(c.env, id, 'ic_approved', row.bod_email);
+    await notifyApprover(c.env, id, 'engineering_approved', row.bod_email);
   }
 
   return c.json({ proposal: await loadProposal(c, id) });
 });
+
+// ---- POST /api/proposals/:id/ic-action — ĐÃ BỎ ----
+// KSNB không còn là bước duyệt trong chuỗi mua hàng (chỉ follow sau completed).
+// Chuỗi mới: User → TP → (EN nếu cần kỹ thuật) → BGĐ → completed.
 
 // ---- POST /api/proposals/:id/bod-action ----
 proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
@@ -1119,8 +977,13 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
   const body = await c.req.json<{ action: 'approve' | 'reject'; comment?: string }>();
   const row = await loadProposal(c, id);
 
-  // General: chờ BGĐ ở status='manager_approved'. PR: ở 'ic_approved'.
-  const expectedStatus = row.proposal_type === 'purchase' ? 'ic_approved' : 'manager_approved';
+  // BGĐ duyệt: general ở manager_approved; PR ở en_approved (nếu cần EN) hoặc manager_approved.
+  const expectedStatus =
+    row.proposal_type === 'purchase'
+      ? row.engineering_required === 1
+        ? 'en_approved'
+        : 'manager_approved'
+      : 'manager_approved';
   if (row.status !== expectedStatus)
     throw unprocessable('Phiếu không ở trạng thái chờ BGĐ duyệt');
   if (!row.bod_email || row.bod_email.toLowerCase() !== user.email.toLowerCase()) {

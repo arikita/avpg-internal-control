@@ -29,7 +29,7 @@ telegramRoutes.post('/webhook/:secret', async (c) => {
 
   try {
     if (update.message) await handleMessage(c.env, update.message);
-    else if (update.callback_query) await handleCallback(c.env, update.callback_query);
+    // Telegram CHỈ THÔNG BÁO — không duyệt qua bot (thông báo dùng nút link mở web).
   } catch (e) {
     console.error('[telegram] handler error', e);
   }
@@ -69,8 +69,6 @@ async function handleMessage(env: Bindings, msg: TgMessage): Promise<void> {
         return cmdHelp(env, msg);
       case '/link':
         return cmdLink(env, msg, rest.join(' ').trim());
-      case '/mypending':
-        return cmdMyPending(env, msg);
       default:
         await sendMessage(env, {
           chatId: msg.chat.id,
@@ -79,19 +77,6 @@ async function handleMessage(env: Bindings, msg: TgMessage): Promise<void> {
         return;
     }
   }
-
-  // Plain text — kiểm pending reject reason
-  if (msg.chat.type !== 'private') return;
-  const pendingKey = `tg:pending:${msg.chat.id}`;
-  const raw = await env.KV.get(pendingKey);
-  if (!raw) return;
-  const pending = JSON.parse(raw) as {
-    kind: 'reject';
-    proposalId: number;
-    role: 'manager' | 'engineering' | 'ic' | 'bod';
-  };
-  await env.KV.delete(pendingKey);
-  await submitReject(env, msg, pending);
 }
 
 // ---------- Commands ----------
@@ -100,12 +85,12 @@ async function cmdStart(env: Bindings, msg: TgMessage): Promise<void> {
     chatId: msg.chat.id,
     text:
       `👋 <b>Chào mừng đến AVPG · Phiếu Đề Xuất</b>\n\n` +
-      `Bot này gửi thông báo phiếu đề xuất qua Telegram và cho phép duyệt nhanh.\n\n` +
+      `Bot này gửi thông báo phiếu đề xuất qua Telegram. Việc duyệt thực hiện trên web.\n\n` +
       `<b>Để bắt đầu:</b>\n` +
       `1. Mở web: ${env.APP_BASE_URL}\n` +
       `2. Đăng nhập M365 → Cài đặt → Liên kết Telegram\n` +
       `3. Copy token, gửi cho bot: <code>/link &lt;token&gt;</code>\n\n` +
-      `Sau khi link, bot sẽ gửi thông báo + cho phép duyệt qua nút bấm.\n\n` +
+      `Sau khi link, bot sẽ gửi thông báo phiếu cho bạn ở đây (bấm "Xem chi tiết" để mở web).\n\n` +
       `Gõ /help để xem các lệnh.`,
   });
 }
@@ -117,7 +102,6 @@ async function cmdHelp(env: Bindings, msg: TgMessage): Promise<void> {
       `<b>Lệnh khả dụng:</b>\n\n` +
       `/start — Hướng dẫn bắt đầu\n` +
       `/link &lt;token&gt; — Liên kết chat với tài khoản M365\n` +
-      `/mypending — Phiếu đang chờ tôi duyệt\n` +
       `/help — Xem trợ giúp`,
   });
 }
@@ -186,12 +170,10 @@ async function cmdMyPending(env: Bindings, msg: TgMessage): Promise<void> {
       WHERE (LOWER(manager_email) = ?1 AND status = 'submitted')
          OR (LOWER(engineering_email) = ?1 AND proposal_type = 'purchase'
              AND engineering_required = 1 AND status = 'manager_approved')
-         OR (LOWER(ic_email) = ?1 AND proposal_type = 'purchase'
-             AND ((engineering_required = 0 AND status = 'manager_approved')
-                  OR (engineering_required = 1 AND status = 'en_approved')))
          OR (LOWER(bod_email) = ?1
              AND ((proposal_type = 'general' AND status = 'manager_approved')
-                  OR (proposal_type = 'purchase' AND status = 'ic_approved')))
+                  OR (proposal_type = 'purchase' AND engineering_required = 1 AND status = 'en_approved')
+                  OR (proposal_type = 'purchase' AND engineering_required = 0 AND status = 'manager_approved')))
       ORDER BY id DESC LIMIT 20`,
   )
     .bind(emailLower)
@@ -253,18 +235,13 @@ function detectRole(p: ProposalCtx, userEmail: string): Role | null {
     p.engineering_email?.toLowerCase() === u
   )
     return 'engineering';
-  if (p.proposal_type === 'purchase' && p.ic_email?.toLowerCase() === u) {
-    if (
-      (p.engineering_required === 0 && p.status === 'manager_approved') ||
-      (p.engineering_required === 1 && p.status === 'en_approved')
-    )
-      return 'ic';
-  }
-  // BOD: general → manager_approved; PR → ic_approved.
+  // BGĐ: general → manager_approved; PR → en_approved (cần EN) hoặc manager_approved (không).
+  // KSNB không còn là bước duyệt.
   if (p.bod_email?.toLowerCase() === u) {
     if (
       (p.proposal_type === 'general' && p.status === 'manager_approved') ||
-      (p.proposal_type === 'purchase' && p.status === 'ic_approved')
+      (p.proposal_type === 'purchase' && p.engineering_required === 1 && p.status === 'en_approved') ||
+      (p.proposal_type === 'purchase' && p.engineering_required === 0 && p.status === 'manager_approved')
     )
       return 'bod';
   }
@@ -385,9 +362,6 @@ async function doApprove(
   } else if (role === 'engineering') {
     newStatus = 'en_approved';
     extraSetSql = `, engineering_acted_at = ?2`;
-  } else if (role === 'ic') {
-    newStatus = 'ic_approved';
-    extraSetSql = `, ic_acted_at = ?2`;
   } else {
     // bod
     newStatus = 'completed';
@@ -458,23 +432,20 @@ async function doApprove(
   };
 
   if (role === 'manager') {
-    if (!isPr) {
-      // General → BOD next (hoặc auto-skip nếu proposer=BOD).
+    if (isPr && needEn && p.engineering_email) {
+      await enqueueNotifyPair(env, p.id, 'manager_approved', p.engineering_email);
+    } else {
+      // General, hoặc PR không cần EN → BGĐ (auto-skip nếu proposer là BGĐ).
       const skipped = await tryBodAutoSkip();
       if (!skipped && p.bod_email) {
         await enqueueNotifyPair(env, p.id, 'manager_approved', p.bod_email);
       }
-    } else if (needEn && p.engineering_email) {
-      await enqueueNotifyPair(env, p.id, 'manager_approved', p.engineering_email);
-    } else if (p.ic_email) {
-      await enqueueNotifyPair(env, p.id, 'manager_approved', p.ic_email);
     }
   } else if (role === 'engineering') {
-    if (p.ic_email) await enqueueNotifyPair(env, p.id, 'engineering_approved', p.ic_email);
-  } else if (role === 'ic') {
+    // EN duyệt xong → BGĐ (auto-skip nếu proposer là BGĐ).
     const skipped = await tryBodAutoSkip();
     if (!skipped && p.bod_email) {
-      await enqueueNotifyPair(env, p.id, 'ic_approved', p.bod_email);
+      await enqueueNotifyPair(env, p.id, 'engineering_approved', p.bod_email);
     }
   } else {
     // bod → completed.

@@ -44,13 +44,6 @@ function detailButtonRow(env: Bindings, id: number): InlineKeyboard[number] {
   return [{ text: '📄 Xem chi tiết', url: detailUrl(env, id) }];
 }
 
-function actionButtonRow(id: number): InlineKeyboard[number] {
-  return [
-    { text: '✅ Duyệt', callback_data: `act:approve:${id}` },
-    { text: '❌ Từ chối', callback_data: `act:reject:${id}` },
-  ];
-}
-
 export async function renderTelegram(
   env: Bindings,
   event: NotificationEvent,
@@ -76,10 +69,7 @@ export async function renderTelegram(
         `👤 ${tgEsc(p.proposer_name)} — ${tgEsc(p.proposer_dept)}\n` +
         `📝 ${tgEsc(p.title)}` +
         (p.proposal_type === 'general' && p.required_time ? `\n⏱ ${tgEsc(p.required_time)}` : '');
-      const kb: InlineKeyboard = opts.withActionButtons
-        ? [actionButtonRow(p.id), detailButtonRow(env, p.id)]
-        : [detailButtonRow(env, p.id)];
-      return { text, replyMarkup: { inline_keyboard: kb } };
+      return { text, replyMarkup: { inline_keyboard: [detailButtonRow(env, p.id)] } };
     }
     case 'manager_approved': {
       // PR: sau TP có thể là EN hoặc IC. General: chờ BGĐ.
@@ -92,24 +82,18 @@ export async function renderTelegram(
         `👤 ${tgEsc(p.proposer_name)} — ${tgEsc(p.proposer_dept)}\n` +
         `📝 ${tgEsc(p.title)}\n` +
         `✓ TP duyệt: ${tgEsc(p.manager_name)}`;
-      const kb: InlineKeyboard = opts.withActionButtons
-        ? [actionButtonRow(p.id), detailButtonRow(env, p.id)]
-        : [detailButtonRow(env, p.id)];
-      return { text, replyMarkup: { inline_keyboard: kb } };
+      return { text, replyMarkup: { inline_keyboard: [detailButtonRow(env, p.id)] } };
     }
     case 'engineering_approved': {
       const text =
-        `🔔 <b>Phiếu mua hàng chờ IC duyệt</b>\n\n` +
+        `🔔 <b>Phiếu mua hàng chờ BGĐ duyệt</b>\n\n` +
         prMeta(p) +
         `📋 <code>${tgEsc(p.code)}</code>\n` +
         `👤 ${tgEsc(p.proposer_name)} — ${tgEsc(p.proposer_dept)}\n` +
         `📝 ${tgEsc(p.title)}\n` +
         `✓ TP: ${tgEsc(p.manager_name)}\n` +
         `✓ EN: ${tgEsc(p.engineering_name)}`;
-      const kb: InlineKeyboard = opts.withActionButtons
-        ? [actionButtonRow(p.id), detailButtonRow(env, p.id)]
-        : [detailButtonRow(env, p.id)];
-      return { text, replyMarkup: { inline_keyboard: kb } };
+      return { text, replyMarkup: { inline_keyboard: [detailButtonRow(env, p.id)] } };
     }
     case 'ic_approved': {
       const text =
@@ -121,10 +105,7 @@ export async function renderTelegram(
         `✓ TP: ${tgEsc(p.manager_name)}` +
         (p.engineering_name ? `\n✓ EN: ${tgEsc(p.engineering_name)}` : '') +
         `\n✓ IC: ${tgEsc(p.ic_name)}`;
-      const kb: InlineKeyboard = opts.withActionButtons
-        ? [actionButtonRow(p.id), detailButtonRow(env, p.id)]
-        : [detailButtonRow(env, p.id)];
-      return { text, replyMarkup: { inline_keyboard: kb } };
+      return { text, replyMarkup: { inline_keyboard: [detailButtonRow(env, p.id)] } };
     }
     case 'bod_approved': {
       // Phase 1: dùng cho group KSNB informational notify khi phiếu hoàn thành

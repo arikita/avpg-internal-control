@@ -427,10 +427,10 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             const arr = [{ key: 'mine', label: 'Phiếu của tôi', count: 0 }];
             // Gộp mọi vai trò duyệt (TP/EN/IC/BGĐ) thành 1 tab — người đóng nhiều role
             // không phải nhảy qua lại. Badge = tổng phiếu đang chờ user duyệt.
-            const isApprover = this.isManager || this.isEngineering || this.isIc || this.isBod;
+            const isApprover = this.isManager || this.isEngineering || this.isBod;
             if (isApprover) {
               const pending = (this.pendingManager || 0) + (this.pendingEngineering || 0)
-                + (this.pendingIc || 0) + (this.pendingBod || 0);
+                + (this.pendingBod || 0);
               arr.push({ key: 'approve_inbox', label: 'Phiếu cần duyệt', count: pending });
             }
             if (this.isKsnb) {
@@ -1131,12 +1131,12 @@ export function proposalDetailPage(
   const canCancel = isOwner && ['draft', 'submitted'].includes(status);
   const canManagerAct = isManagerOf && status === 'submitted';
   const canEngineeringAct = isPr && needEn && isEnOf && status === 'manager_approved';
-  const canIcAct =
-    isPr &&
-    isIcOf &&
-    ((!needEn && status === 'manager_approved') || (needEn && status === 'en_approved'));
-  // BOD: general chờ ở manager_approved, PR chờ ở ic_approved.
-  const canBodAct = isBodOf && ((!isPr && status === 'manager_approved') || (isPr && status === 'ic_approved'));
+  // BGĐ: general ở manager_approved; PR ở en_approved (nếu cần EN) hoặc manager_approved (không). KSNB không còn duyệt.
+  const canBodAct =
+    isBodOf &&
+    ((!isPr && status === 'manager_approved') ||
+      (isPr && needEn && status === 'en_approved') ||
+      (isPr && !needEn && status === 'manager_approved'));
 
   const fmtVnd = (n: unknown): string => {
     if (n == null || isNaN(Number(n))) return '0';
@@ -1245,11 +1245,9 @@ export function proposalDetailPage(
     ? 'manager-action'
     : canEngineeringAct
       ? 'engineering-action'
-      : canIcAct
-        ? 'ic-action'
-        : canBodAct
-          ? 'bod-action'
-          : null;
+      : canBodAct
+        ? 'bod-action'
+        : null;
 
   const actionBar: Html = ((): Html => {
     if (!actionRole && (canSubmit || canEdit || canCancel)) {
@@ -1278,11 +1276,9 @@ export function proposalDetailPage(
     if (actionRole) {
       const approveLabel = canEngineeringAct
         ? '✓ Duyệt (EN)'
-        : canIcAct
-          ? '✓ Duyệt (IC)'
-          : canBodAct
-            ? '✓ Duyệt (BGĐ)'
-            : '✓ Duyệt';
+        : canBodAct
+          ? '✓ Duyệt (BGĐ)'
+          : '✓ Duyệt';
       return html`
         <div class="space-y-2">
           <textarea x-model="comment" rows="2" placeholder="Ghi chú / lý do (không bắt buộc)…"

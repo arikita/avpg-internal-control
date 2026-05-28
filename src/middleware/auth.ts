@@ -21,6 +21,7 @@ function devMockUser(c: { env: AppEnv['Bindings'] }): SessionUser | null {
 export const sessionMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
   const mock = devMockUser(c);
   if (mock) {
+    mock.isAdmin = isAdmin(c.env, mock.email);
     c.set('user', mock);
     await next();
     return;
@@ -41,6 +42,7 @@ export const sessionMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
         // Disabled → xoá cookie, coi như chưa đăng nhập (requireAuth sẽ 401).
         c.header('Set-Cookie', clearSessionCookie(c.env.APP_ENV === 'production'));
       } else {
+        user.isAdmin = isAdmin(c.env, user.email);
         c.set('user', user);
       }
     }

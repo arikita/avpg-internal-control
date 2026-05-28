@@ -37,6 +37,7 @@ export type SessionUser = {
   name: string;
   jobTitle?: string | null;
   deptCode: string | null;
+  isAdmin?: boolean;     // gán ở sessionMiddleware (tươi mỗi request từ ADMIN_EMAILS) — KHÔNG lưu cookie
 };
 
 export type Variables = {

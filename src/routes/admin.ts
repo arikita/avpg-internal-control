@@ -159,6 +159,11 @@ function auditPage(rows: AuditRow[], f: { proposal: string; actor: string; limit
   a{color:#1d4ed8;text-decoration:none}
 </style></head>
 <body>
+  <nav style="display:flex;gap:14px;font-size:13px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #e2e8f0">
+    <a href="/app" style="color:#64748b;text-decoration:none">← Về app</a>
+    <a href="/admin/approvers" style="color:#1d4ed8;text-decoration:none">Người duyệt</a>
+    <a href="/admin/audit" style="color:#1d4ed8;font-weight:600;text-decoration:none">Nhật ký duyệt</a>
+  </nav>
   <h1>📜 Audit log phê duyệt</h1>
   <form method="get" action="/admin/audit">
     <label>Mã phiếu (id)<input type="number" name="proposal" value="${f.proposal}" placeholder="vd 42" /></label>
@@ -293,6 +298,11 @@ function approversPage() {
 <style>[x-cloak]{display:none!important}</style>
 </head>
 <body class="bg-slate-50 text-slate-900 p-6" x-data="approvers()" x-init="load()">
+  <nav class="flex gap-4 text-sm mb-4 pb-3 border-b border-slate-200">
+    <a href="/app" class="text-slate-500 hover:underline">← Về app</a>
+    <a href="/admin/approvers" class="text-blue-700 font-semibold hover:underline">Người duyệt</a>
+    <a href="/admin/audit" class="text-blue-700 hover:underline">Nhật ký duyệt</a>
+  </nav>
   <h1 class="text-lg font-semibold mb-1">👥 Cấu hình người duyệt</h1>
   <p class="text-sm text-slate-500 mb-5">Gán Trưởng phòng cho từng phòng + thành viên BGĐ / Kỹ thuật / KSNB. Tìm người trực tiếp từ M365.</p>
 

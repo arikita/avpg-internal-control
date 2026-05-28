@@ -5,6 +5,13 @@ import { unprocessable } from './errors';
 
 export type Approver = { email: string; name: string };
 
+// Phòng Internal Control (KSNB) — dùng cho Phase 2 (KSNB theo dõi mua hàng).
+// Đổi mã nếu mã phòng KSNB trong bảng departments thay đổi.
+export const KSNB_DEPT_CODE = 'INT';
+export function isKsnbUser(deptCode: string | null | undefined): boolean {
+  return (deptCode ?? '') === KSNB_DEPT_CODE;
+}
+
 export async function getDeptManager(env: Bindings, deptCode: string): Promise<Approver> {
   const row = await env.DB.prepare(
     `SELECT user_email AS email, user_name AS name

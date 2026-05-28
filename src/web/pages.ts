@@ -1,6 +1,7 @@
 // Web pages — render HTML server-side. Tất cả interactive bằng Alpine.
 
 import { html } from 'hono/html';
+import { isKsnbUser } from '../lib/routing';
 import { page, statusBadge, type Html } from './layout';
 import type { SessionUser } from '../types';
 
@@ -409,6 +410,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           proposals: [],
           isManager, isBod, isEngineering, isIc,
           pendingManager, pendingBod, pendingEngineering, pendingIc,
+          isKsnb: false, pendingProcurement: 0,
           tabs: [],
           // settings modal
           settingsModal: false,
@@ -431,6 +433,9 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
                 + (this.pendingIc || 0) + (this.pendingBod || 0);
               arr.push({ key: 'approve_inbox', label: 'Phiếu cần duyệt', count: pending });
             }
+            if (this.isKsnb) {
+              arr.push({ key: 'procurement_inbox', label: 'Phiếu cần mua', count: this.pendingProcurement || 0 });
+            }
             this.tabs = arr;
           },
           async load() {
@@ -451,6 +456,8 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
               this.pendingBod = counts.pendingBod || 0;
               this.pendingEngineering = counts.pendingEngineering || 0;
               this.pendingIc = counts.pendingIc || 0;
+              this.isKsnb = !!counts.isKsnb;
+              this.pendingProcurement = counts.pendingProcurement || 0;
               this.rebuildTabs();
             } catch (e) {
               alert('Lỗi tải dữ liệu: ' + e.message);
@@ -1051,6 +1058,7 @@ export function proposalDetailPage(
   proposal: Record<string, unknown>,
   items: Array<Record<string, unknown>>,
   approvals: Array<Record<string, unknown>>,
+  procurement?: { head: Record<string, unknown> | null; events: Array<Record<string, unknown>> } | null,
 ) {
   const isOwner = proposal.proposer_user_id === user.id;
   const userEmailLower = user.email.toLowerCase();
@@ -1067,6 +1075,56 @@ export function proposalDetailPage(
   const proposalType = ((proposal.proposal_type as string) ?? 'general') as 'general' | 'purchase';
   const isPr = proposalType === 'purchase';
   const needEn = isPr && Number(proposal.engineering_required ?? 0) === 1;
+  const isKsnb = isKsnbUser(user.deptCode);
+
+  const procTypeLabel = (t: string): string =>
+    (({ order: 'Đặt hàng', receive: 'Nhận hàng', payment: 'Thanh toán', other: 'Khác' }) as Record<string, string>)[t] ?? t;
+  const procHead = (procurement?.head ?? null) as Record<string, unknown> | null;
+  const procEvents = procurement?.events ?? [];
+  const procStatus = (procHead?.status as string) ?? 'pending';
+  const procurementSection: Html =
+    isPr && status === 'completed'
+      ? html`
+      <div class="bg-white border border-slate-200 rounded-lg p-6">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold">🛒 Theo dõi mua hàng (KSNB)</h2>
+          <span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${procStatus === 'done' ? 'bg-emerald-100 text-emerald-800' : procStatus === 'in_progress' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'}">${procStatus === 'done' ? 'Đã hoàn tất' : procStatus === 'in_progress' ? 'Đang mua sắm' : 'Chờ mua sắm'}</span>
+        </div>
+        ${procEvents.length === 0
+          ? html`<div class="text-sm text-slate-400 mb-3">Chưa có hoạt động mua sắm.</div>`
+          : html`<ul class="space-y-2 mb-3">
+              ${procEvents.map(
+                (e) => html`<li class="text-sm border-l-2 border-blue-200 pl-3">
+                  <span class="font-medium text-slate-800">${procTypeLabel(e.type as string)}</span>${e.percent != null ? html`<span class="text-blue-700"> · ${String(e.percent)}%</span>` : ''}${e.event_date ? html`<span class="text-slate-500"> · ${e.event_date as string}</span>` : ''}
+                  ${e.note ? html`<div class="text-slate-600 italic">"${e.note as string}"</div>` : ''}
+                  <div class="text-xs text-slate-400">${(e.created_by_name as string) ?? ''}</div>
+                </li>`,
+              )}
+            </ul>`}
+        ${procStatus === 'done'
+          ? html`<div class="text-sm text-emerald-700">✓ Đã hoàn tất mua sắm bởi ${(procHead?.done_by_name as string) ?? ''}</div>`
+          : isKsnb
+            ? html`
+              <div class="border-t border-slate-100 pt-3 space-y-2">
+                <div class="grid grid-cols-2 gap-2">
+                  <select x-model="procType" class="px-2 py-1.5 border border-slate-300 rounded text-sm">
+                    <option value="order">Đặt hàng</option>
+                    <option value="receive">Nhận hàng</option>
+                    <option value="payment">Thanh toán</option>
+                    <option value="other">Khác</option>
+                  </select>
+                  <input x-model="procDate" type="text" placeholder="Ngày (vd 27/05/2026)" class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
+                  <input x-show="procType==='payment'" x-model="procPct" type="number" min="0" max="100" placeholder="% thanh toán" class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
+                  <input x-model="procNote" type="text" placeholder="Ghi chú" class="px-2 py-1.5 border border-slate-300 rounded text-sm col-span-2" />
+                </div>
+                <div class="flex gap-2">
+                  <button @click="procAddEvent()" :disabled="busy" class="px-3 py-1.5 bg-blue-700 hover:bg-blue-800 text-white rounded text-sm font-medium disabled:opacity-50">+ Thêm hoạt động</button>
+                  <button @click="procDone()" :disabled="busy" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">Hoàn tất mua sắm</button>
+                </div>
+              </div>`
+            : html`<div class="text-xs text-slate-400">Chỉ KSNB cập nhật được mua sắm.</div>`}
+      </div>`
+      : html``;
 
   const canSubmit = isOwner && status === 'draft';
   const canEdit = isOwner && ['draft', 'submitted'].includes(status);
@@ -1357,6 +1415,7 @@ export function proposalDetailPage(
         <h2 class="text-sm font-semibold mb-3">Hành động</h2>
         ${actionBar}
       </div>
+      ${procurementSection}
     </div>
 
     <script>
@@ -1366,6 +1425,10 @@ export function proposalDetailPage(
           busy: false,
           rejectMode: false,
           comment: '',
+          procType: 'order',
+          procDate: '',
+          procPct: '',
+          procNote: '',
           async action(kind) {
             this._do(kind, null, null);
           },
@@ -1387,6 +1450,31 @@ export function proposalDetailPage(
             } catch (e) {
               alert(e.message); this.busy = false;
             }
+          },
+          async procAddEvent() {
+            this.busy = true;
+            try {
+              const r = await fetch('/api/proposals/' + this.id + '/procurement/event', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: this.procType, event_date: this.procDate, percent: this.procPct === '' ? null : Number(this.procPct), note: this.procNote }),
+              });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+              window.location.reload();
+            } catch (e) { alert(e.message); this.busy = false; }
+          },
+          async procDone() {
+            if (!confirm('Đánh dấu HOÀN TẤT mua sắm cho phiếu này?')) return;
+            this.busy = true;
+            try {
+              const r = await fetch('/api/proposals/' + this.id + '/procurement/done', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ note: this.procNote }),
+              });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+              window.location.reload();
+            } catch (e) { alert(e.message); this.busy = false; }
           },
         };
       }

@@ -249,5 +249,25 @@ webRoutes.get('/p/:id{[0-9]+}', async (c) => {
   )
     .bind(id)
     .all<Record<string, unknown>>();
-  return c.html(proposalDetailPage(user, proposal, items.results ?? [], approvals.results ?? []));
+
+  // Phase 2: nạp dữ liệu mua sắm cho phiếu mua hàng đã duyệt.
+  let procurement: {
+    head: Record<string, unknown> | null;
+    events: Array<Record<string, unknown>>;
+  } | null = null;
+  if (proposal.proposal_type === 'purchase' && proposal.status === 'completed') {
+    const head = await c.env.DB.prepare(`SELECT * FROM procurement WHERE proposal_id = ?1`)
+      .bind(id)
+      .first<Record<string, unknown>>();
+    const ev = await c.env.DB.prepare(
+      `SELECT id, type, event_date, percent, note, created_by_name, created_at
+         FROM procurement_event WHERE proposal_id = ?1 ORDER BY id ASC`,
+    )
+      .bind(id)
+      .all<Record<string, unknown>>();
+    procurement = { head: head ?? null, events: ev.results ?? [] };
+  }
+  return c.html(
+    proposalDetailPage(user, proposal, items.results ?? [], approvals.results ?? [], procurement),
+  );
 });

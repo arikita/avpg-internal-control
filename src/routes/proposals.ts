@@ -9,7 +9,7 @@ import type { AppEnv } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { badRequest, forbidden, notFound, unprocessable } from '../lib/errors';
 import { nextProposalCode } from '../lib/codes';
-import { getActiveBod, getActiveEngineering, getActiveIc, getDeptManager } from '../lib/routing';
+import { getActiveBod, getActiveEngineering, getActiveIc, getDeptManager, isKsnbUser } from '../lib/routing';
 import { enqueueNotification, type NotificationEvent } from '../lib/notifications';
 import { calcPrTotals, lineTotal, DEFAULT_VAT_RATE, ALLOWED_VAT_RATES } from '../lib/pr-math';
 import { nowIso } from '../lib/time';
@@ -377,6 +377,19 @@ proposalRoutes.get('/', async (c) => {
               )
               ORDER BY updated_at ASC`;
       bind = [emailLower];
+      break;
+    case 'procurement_inbox':
+      // Phase 2: phiếu mua hàng đã duyệt (completed) + mua sắm chưa 'done' → cho user KSNB.
+      if (!isKsnbUser(user.deptCode)) {
+        sql = `SELECT * FROM proposals WHERE 1 = 0`;
+        bind = [];
+        break;
+      }
+      sql = `SELECT * FROM proposals p
+              WHERE p.proposal_type = 'purchase' AND p.status = 'completed'
+                AND COALESCE((SELECT pr.status FROM procurement pr WHERE pr.proposal_id = p.id), 'pending') <> 'done'
+              ORDER BY p.completed_at ASC`;
+      bind = [];
       break;
     default:
       throw badRequest('scope không hợp lệ');
@@ -1177,3 +1190,87 @@ proposalRoutes.post('/:id{[0-9]+}/bod-action', async (c) => {
 
 // /ksnb-complete endpoint đã xoá — KSNB không còn vai trò trong workflow.
 // Phiếu hoàn thành tự động khi BOD duyệt (xem bod-action endpoint trên).
+
+// ---- Phase 2: KSNB theo dõi mua hàng (procurement) ----
+async function loadProcurement(env: AppEnv['Bindings'], id: number) {
+  const head = await env.DB.prepare(`SELECT * FROM procurement WHERE proposal_id = ?1`)
+    .bind(id)
+    .first();
+  const events = await env.DB.prepare(
+    `SELECT id, type, event_date, percent, note, created_by_name, created_at
+       FROM procurement_event WHERE proposal_id = ?1 ORDER BY id ASC`,
+  )
+    .bind(id)
+    .all();
+  return { head: head ?? null, events: events.results ?? [] };
+}
+
+const PROC_TYPES = ['order', 'receive', 'payment', 'other'];
+
+// GET trạng thái + nhật ký mua sắm.
+proposalRoutes.get('/:id{[0-9]+}/procurement', async (c) => {
+  return c.json(await loadProcurement(c.env, Number(c.req.param('id'))));
+});
+
+// Thêm 1 hoạt động mua sắm (Đặt hàng / Nhận hàng / Thanh toán % / Khác).
+proposalRoutes.post('/:id{[0-9]+}/procurement/event', async (c) => {
+  const id = Number(c.req.param('id'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB được theo dõi mua hàng');
+  const row = await loadProposal(c, id);
+  if (row.proposal_type !== 'purchase' || row.status !== 'completed') {
+    throw unprocessable('Chỉ phiếu mua hàng đã duyệt mới theo dõi mua sắm');
+  }
+  const body = await c.req.json<{ type?: string; event_date?: string; percent?: number; note?: string }>();
+  const type = body.type ?? '';
+  if (!PROC_TYPES.includes(type)) throw badRequest('Loại hoạt động không hợp lệ');
+  const percent = type === 'payment' && body.percent != null ? Number(body.percent) : null;
+  const now = nowIso();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO procurement (proposal_id, status, updated_at) VALUES (?1, 'in_progress', ?2)
+       ON CONFLICT (proposal_id) DO UPDATE
+         SET status = CASE WHEN procurement.status = 'done' THEN 'done' ELSE 'in_progress' END,
+             updated_at = ?2`,
+    ).bind(id, now),
+    c.env.DB.prepare(
+      `INSERT INTO procurement_event (proposal_id, type, event_date, percent, note, created_by_user_id, created_by_name)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(id, type, (body.event_date ?? '').trim() || null, percent, (body.note ?? '').trim() || null, user.id, user.name),
+  ]);
+  const actx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'procurement_event', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+    proposalId: id, action: type, channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+    detail: JSON.stringify({ type, percent, note: body.note ?? null }),
+  });
+  return c.json(await loadProcurement(c.env, id));
+});
+
+// Đánh dấu hoàn tất mua sắm (đóng giai đoạn).
+proposalRoutes.post('/:id{[0-9]+}/procurement/done', async (c) => {
+  const id = Number(c.req.param('id'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB được theo dõi mua hàng');
+  const row = await loadProposal(c, id);
+  if (row.proposal_type !== 'purchase' || row.status !== 'completed') {
+    throw unprocessable('Phiếu không hợp lệ để hoàn tất mua sắm');
+  }
+  const body = await c.req.json<{ note?: string }>();
+  const now = nowIso();
+  await c.env.DB.prepare(
+    `INSERT INTO procurement (proposal_id, status, done_at, done_by_user_id, done_by_name, done_note, updated_at)
+     VALUES (?1, 'done', ?2, ?3, ?4, ?5, ?2)
+     ON CONFLICT (proposal_id) DO UPDATE
+       SET status = 'done', done_at = ?2, done_by_user_id = ?3, done_by_name = ?4, done_note = ?5, updated_at = ?2`,
+  )
+    .bind(id, now, user.id, user.name, (body.note ?? '').trim() || null)
+    .run();
+  const actx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'procurement_done', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+    proposalId: id, action: 'done', channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+    detail: JSON.stringify({ note: body.note ?? null }),
+  });
+  return c.json(await loadProcurement(c.env, id));
+});

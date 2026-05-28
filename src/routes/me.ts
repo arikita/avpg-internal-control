@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { badRequest, unprocessable } from '../lib/errors';
+import { isKsnbUser } from '../lib/routing';
 
 export const meRoutes = new Hono<AppEnv>();
 meRoutes.use('*', requireAuth);
@@ -154,6 +155,18 @@ meRoutes.get('/inbox-counts', async (c) => {
   const pendingBod = pendBod?.n ?? 0;
   const pendingEngineering = pendEn?.n ?? 0;
   const pendingIc = pendIc?.n ?? 0;
+
+  // Phase 2: KSNB theo dõi mua hàng — đếm phiếu mua hàng đã duyệt chưa hoàn tất mua sắm.
+  const isKsnb = isKsnbUser(user.deptCode);
+  const pendProc = isKsnb
+    ? await c.env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM proposals p
+          WHERE p.proposal_type = 'purchase' AND p.status = 'completed'
+            AND COALESCE((SELECT pr.status FROM procurement pr WHERE pr.proposal_id = p.id), 'pending') <> 'done'`,
+      ).first<{ n: number }>()
+    : null;
+  const pendingProcurement = pendProc?.n ?? 0;
+
   return c.json({
     // Hiện tab nếu là approver trong cấu hình HOẶC còn phiếu chờ duyệt
     // (approver cũ vừa bị remove vẫn cần thấy phiếu pending đã gán cho họ).
@@ -161,9 +174,11 @@ meRoutes.get('/inbox-counts', async (c) => {
     isBod: !!bodRow || pendingBod > 0,
     isEngineering: !!enRow || pendingEngineering > 0,
     isIc: !!icRow || pendingIc > 0,
+    isKsnb,
     pendingManager,
     pendingBod,
     pendingEngineering,
     pendingIc,
+    pendingProcurement,
   });
 });

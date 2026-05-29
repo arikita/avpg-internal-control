@@ -78,22 +78,16 @@ export class PgDb {
   }
 
   // Chạy nhiều statement trong 1 transaction (như D1.batch).
+  // KHÔNG tự thêm "RETURNING id": trong transaction, lỗi (vd bảng procurement không có
+  // cột id) sẽ abort cả transaction nên không retry được. Không caller nào của batch dùng
+  // last_row_id, nên chạy nguyên câu là đủ.
   async batch(stmts: PgStatement[]): Promise<BatchResult[]> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const out: BatchResult[] = [];
       for (const st of stmts) {
-        const augmented = isInsert(st.sql) && !hasReturning(st.sql);
-        const q = augmented ? `${st.sql} RETURNING id` : st.sql;
-        let r;
-        try {
-          r = await client.query(q, st.params);
-        } catch (e) {
-          if (augmented && /column "id" does not exist/i.test((e as Error).message)) {
-            r = await client.query(st.sql, st.params);
-          } else throw e;
-        }
+        const r = await client.query(st.sql, st.params);
         out.push({ success: true, results: r.rows, meta: metaOf(r) });
       }
       await client.query('COMMIT');

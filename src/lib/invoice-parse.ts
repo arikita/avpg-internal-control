@@ -124,15 +124,39 @@ function labelAfter(html: string, anchorClass: string): number | null {
   return m ? parseVnNumber(m[1] ?? null) : null;
 }
 
+// ===== Fallback cho template easyinvoice kiểu "nhãn + value chung" (vd VPP ONG VÀNG) =====
+// Số tiền: <span class="Sub|THUE|Total"><label>…</label>.
+function spanLabelNum(html: string, cls: string): number | null {
+  const re = new RegExp(`class="${cls}"[^>]*>\\s*(?:<label[^>]*>\\s*)+([^<]*)`, 'i');
+  const m = html.match(re);
+  return m ? parseVnNumber(m[1] ?? null) : null;
+}
+// <span class="value">…</span> đứng sau 1 nhãn (vd "Ký hiệu (Serial)").
+function valueSpanAfter(html: string, labelRe: string): string | null {
+  const re = new RegExp(`${labelRe}[\\s\\S]{0,80}?class="value"[^>]*>([^<]*)<`, 'i');
+  const m = html.match(re);
+  return m ? stripTags(m[1] ?? '') || null : null;
+}
+// <b>…</b> đầu tiên sau 1 nhãn (bỏ qua <span> ẩn không chứa <b>).
+function boldAfter(html: string, labelRe: string): string | null {
+  const re = new RegExp(`${labelRe}[\\s\\S]{0,200}?<b[^>]*>([^<]+)</b>`, 'i');
+  const m = html.match(re);
+  return m ? stripTags(m[1] ?? '') || null : null;
+}
+
 export function parseEasyInvoiceHtml(raw: string): InvoiceData {
   const html = unescapeJsHtml(raw);
   const seller = emptyParty();
   const buyer = emptyParty();
-  seller.name = byClass(html, 'dvbh-value');
-  seller.taxCode = byClass(html, 'compmst-value');
+  // Template H&T: class ngữ nghĩa (*-value). Fallback template ONG VÀNG: nhãn + <b>/class chung.
+  seller.name = byClass(html, 'dvbh-value') ?? boldAfter(html, 'Đơn vị bán hàng');
+  seller.taxCode =
+    byClass(html, 'compmst-value') ?? (html.match(/<b class="mst"[^>]*>([^<]*)<\/b>/i)?.[1]?.trim() || null);
   seller.address = byClass(html, 'compaddress-value');
-  buyer.name = byClass(html, 'cusname-value');
-  buyer.taxCode = byClass(html, 'custaxcode-value');
+  buyer.name = byClass(html, 'cusname-value') ?? boldAfter(html, 'Tên đơn vị');
+  buyer.taxCode =
+    byClass(html, 'custaxcode-value') ??
+    (html.match(/Tên đơn vị[\s\S]*?Mã số thuế[\s\S]*?<b[^>]*>([0-9]{8,})<\/b>/i)?.[1] ?? null);
   buyer.address = byClass(html, 'cusaddress-value');
 
   // Ngày: 3 <label> trong <p class="date">  → Ngày / tháng / năm.
@@ -152,10 +176,12 @@ export function parseEasyInvoiceHtml(raw: string): InvoiceData {
   const lookupMatch = html.match(/Mã tra cứu:\s*(?:<[^>]*>\s*)*([A-Z0-9]{5,})/i);
   const lookupCode = lookupMatch?.[1] ?? null;
 
-  const vatRate = parseVatRate(byClass(html, 'vatrate'));
-  const subtotal = labelAfter(html, 'totalamount-en');
-  const vatAmount = labelAfter(html, 'vatamount-en');
-  const total = labelAfter(html, 'totalpayment-en');
+  const vatRate = parseVatRate(
+    byClass(html, 'vatrate') ?? (html.match(/class="vatrate1?"[^>]*>\s*([0-9.,]+)\s*%/i)?.[1] ?? null),
+  );
+  const subtotal = labelAfter(html, 'totalamount-en') ?? spanLabelNum(html, 'Sub');
+  const vatAmount = labelAfter(html, 'vatamount-en') ?? spanLabelNum(html, 'THUE');
+  const total = labelAfter(html, 'totalpayment-en') ?? spanLabelNum(html, 'Total');
 
   // Dòng hàng: mỗi dòng có 1 <td class="quantity...">. Lấy các <tr> chứa class quantity.
   // easyinvoice render HĐ 2 bản (hiển thị + bản ẩn cho in/PDF) → chỉ quét vùng TRƯỚC khối
@@ -193,7 +219,7 @@ export function parseEasyInvoiceHtml(raw: string): InvoiceData {
 
   return {
     provider: 'easyinvoice',
-    serial: byClass(html, 'serial-value'),
+    serial: byClass(html, 'serial-value') ?? valueSpanAfter(html, 'Ký hiệu'),
     invoiceNo: byClass(html, 'no-value'),
     invoiceDate,
     taxAuthCode: byClass(html, 'ma-value'),

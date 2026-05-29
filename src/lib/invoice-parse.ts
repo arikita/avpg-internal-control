@@ -106,7 +106,11 @@ function unescapeJsHtml(html: string): string {
     .replace(/\\u0026/gi, '&')
     .replace(/\\u0022/gi, '"')
     .replace(/\\u0027/gi, "'")
+    .replace(/\\u00a0/gi, ' ')
+    .replace(/&quot;/g, '"') // \&quot; (escape lồng) → \" → " ở bước kế
     .replace(/\\"/g, '"')
+    // xuống dòng/tab dạng escape (\n \r \t) → khoảng trắng để \s* trong selector vượt qua được
+    .replace(/\\[rnt]/g, ' ')
     .replace(/\\\//g, '/');
 }
 

@@ -227,3 +227,30 @@ Nếu trả về `access_token` → setup OK. Em sẽ dùng token này ở bư�
 | `User.ReadBasic.All` | Delegated | Lookup name/email/dept của Manager khi proposer submit |
 | `email`, `profile`, `offline_access` | Delegated | OIDC scopes chuẩn |
 | `Mail.Send` | Application | Worker gửi email qua Graph (không cần user context) |
+| `User.Read.All` | Application | account-sync (phát hiện account bị disable) + search người gán approver |
+| `Mail.Read` | Application | **Phase 3** — ingest hóa đơn NCC: đọc shared mailbox nhận HĐĐT |
+
+---
+
+## Phase 3 — Mail.Read cho ingest hóa đơn NCC
+
+Module theo dõi hóa đơn NCC tự đọc mail HĐĐT về 1 shared mailbox (env `INVOICE_MAILBOX`).
+Dùng LẠI app registration hiện có (không tạo app mới), chỉ cần thêm 1 quyền:
+
+1. App registration → **API permissions** → Add → Microsoft Graph → **Application permissions**
+   → `Mail.Read` → **Grant admin consent**.
+2. ⚠️ `Mail.Read` (application) mặc định cho app đọc **mọi** mailbox trong tổ chức.
+   Giới hạn app chỉ đọc đúng shared mailbox hóa đơn bằng **Application Access Policy**
+   (Exchange Online PowerShell):
+
+   ```powershell
+   New-ApplicationAccessPolicy `
+     -AppId <CLIENT_ID> `
+     -PolicyScopeGroupId <shared-mailbox@domain> `
+     -AccessRight RestrictAccess `
+     -Description "Chi cho phep app doc shared mailbox hoa don"
+   # Kiểm tra:
+   Test-ApplicationAccessPolicy -Identity <shared-mailbox@domain> -AppId <CLIENT_ID>
+   ```
+
+3. Set `INVOICE_MAILBOX=<shared-mailbox@domain>` trong `.env`. Trống = tắt ingest.

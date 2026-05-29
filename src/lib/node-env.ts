@@ -33,6 +33,7 @@ export function buildNodeEnv(): Bindings {
     APP_BASE_URL: reqEnv('APP_BASE_URL'),
     ENTRA_REDIRECT_PATH: process.env.ENTRA_REDIRECT_PATH ?? '/auth/callback',
     NO_REPLY_MAILBOX: process.env.NO_REPLY_MAILBOX ?? '',
+    INVOICE_MAILBOX: process.env.INVOICE_MAILBOX ?? '',
     VN_TZ_OFFSET_MINUTES: process.env.VN_TZ_OFFSET_MINUTES ?? '420',
     ADMIN_EMAILS: process.env.ADMIN_EMAILS ?? '',
 

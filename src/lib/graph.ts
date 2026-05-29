@@ -57,6 +57,91 @@ export async function graphSendMail(env: Bindings, args: SendMailArgs): Promise<
   return { ok: false, error: `Graph sendMail ${res.status}: ${text.slice(0, 500)}` };
 }
 
+// ===== Đọc mail (ingest hóa đơn NCC) — YÊU CẦU permission Mail.Read (application) =====
+// Nên giới hạn app chỉ đọc đúng shared mailbox hóa đơn bằng Application Access Policy
+// (New-ApplicationAccessPolicy ... -AccessRight RestrictAccess) để không đọc tràn cả tổ chức.
+
+export type GraphMessage = {
+  id: string;
+  subject: string;
+  from: string;
+  receivedDateTime: string;
+  hasAttachments: boolean;
+  bodyHtml: string;
+};
+
+// Liệt kê N mail mới nhất trong mailbox (kèm body HTML để dò link hóa đơn).
+export async function graphListMessages(
+  env: Bindings,
+  mailbox: string,
+  top = 25,
+): Promise<GraphMessage[]> {
+  const token = await getCachedAppToken(env);
+  const url =
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages` +
+    `?$top=${top}&$orderby=receivedDateTime desc` +
+    `&$select=id,subject,from,receivedDateTime,hasAttachments,body`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 401) await env.KV.delete(TOKEN_CACHE_KEY);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph listMessages ${res.status}: ${text.slice(0, 500)}`);
+  }
+  const json = (await res.json()) as {
+    value?: Array<{
+      id: string;
+      subject?: string;
+      from?: { emailAddress?: { address?: string } };
+      receivedDateTime?: string;
+      hasAttachments?: boolean;
+      body?: { contentType?: string; content?: string };
+    }>;
+  };
+  return (json.value ?? []).map((m) => ({
+    id: m.id,
+    subject: m.subject ?? '',
+    from: m.from?.emailAddress?.address ?? '',
+    receivedDateTime: m.receivedDateTime ?? '',
+    hasAttachments: !!m.hasAttachments,
+    bodyHtml: m.body?.content ?? '',
+  }));
+}
+
+export type GraphAttachment = { name: string; contentType: string; bytes: Uint8Array };
+
+// Tải các file đính kèm (fileAttachment) của 1 mail — contentBytes base64.
+export async function graphListAttachments(
+  env: Bindings,
+  mailbox: string,
+  messageId: string,
+): Promise<GraphAttachment[]> {
+  const token = await getCachedAppToken(env);
+  const url =
+    `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}` +
+    `/messages/${encodeURIComponent(messageId)}/attachments`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (res.status === 401) await env.KV.delete(TOKEN_CACHE_KEY);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph attachments ${res.status}: ${text.slice(0, 500)}`);
+  }
+  const json = (await res.json()) as {
+    value?: Array<{
+      '@odata.type'?: string;
+      name?: string;
+      contentType?: string;
+      contentBytes?: string;
+    }>;
+  };
+  return (json.value ?? [])
+    .filter((a) => a['@odata.type'] === '#microsoft.graph.fileAttachment' && a.contentBytes)
+    .map((a) => ({
+      name: a.name ?? '',
+      contentType: a.contentType ?? '',
+      bytes: Uint8Array.from(atob(a.contentBytes as string), (ch) => ch.charCodeAt(0)),
+    }));
+}
+
 export type GraphUser = { email: string; name: string };
 
 // Search user trong directory để admin gán approver. App token (User.Read.All — đã có cho account-sync).

@@ -1,0 +1,503 @@
+// Theo dõi HÓA ĐƠN NCC + công nợ. Mail HĐĐT → ingest tạo dòng 'pending' →
+// người dùng xác nhận (nhà máy / NCC / phiếu) → 'confirmed' → theo dõi thanh toán.
+// Trang server-render (Tailwind, form POST). Admin: map MST bên mua → nhà máy.
+
+import { Hono } from 'hono';
+import { html } from 'hono/html';
+import type { AppEnv } from '../types';
+import { page } from '../web/layout';
+import { requireAdmin } from '../middleware/auth';
+import { badRequest, notFound } from '../lib/errors';
+import { nowIso, vnDisplay } from '../lib/time';
+import { runInvoiceIngest } from '../lib/invoice-ingest';
+
+export const invoiceRoutes = new Hono<AppEnv>();
+
+// Bắt buộc đăng nhập cho toàn bộ /invoices.
+invoiceRoutes.use('*', async (c, next) => {
+  if (!c.get('user')) return c.redirect('/auth/login?return_to=/invoices');
+  await next();
+});
+
+// ===== Helpers hiển thị =====
+const vnd = new Intl.NumberFormat('vi-VN');
+const money = (n: unknown): string => (n == null ? '' : vnd.format(Number(n)));
+const pct = (n: unknown): string => (n == null ? '' : `${Number(n) * 100}%`);
+const esc = (s: unknown): string => String(s ?? '');
+
+type InvoiceRow = {
+  id: number;
+  status: string;
+  provider: string | null;
+  invoice_url: string | null;
+  serial: string | null;
+  invoice_no: string | null;
+  invoice_date: string | null;
+  seller_tax_code: string | null;
+  seller_name: string | null;
+  buyer_tax_code: string | null;
+  buyer_name: string | null;
+  branch: string | null;
+  supplier_short: string | null;
+  subtotal: number | null;
+  vat_rate: number | null;
+  vat_amount: number | null;
+  total: number | null;
+  payment_status: string;
+  paid_amount: number | null;
+  proposal_code: string | null;
+  doc_submit_date: string | null;
+  receive_date: string | null;
+  note: string | null;
+  amount_words: string | null;
+  seller_address: string | null;
+  buyer_address: string | null;
+  tax_auth_code: string | null;
+  lookup_code: string | null;
+  confirmed_by_name: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+};
+
+function payBadge(status: string) {
+  const map: Record<string, { label: string; cls: string }> = {
+    unpaid: { label: 'Chưa TT', cls: 'bg-rose-100 text-rose-700' },
+    partial: { label: 'TT một phần', cls: 'bg-amber-100 text-amber-800' },
+    paid: { label: 'Đã TT', cls: 'bg-emerald-100 text-emerald-700' },
+  };
+  const m = map[status] ?? { label: status, cls: 'bg-slate-100 text-slate-600' };
+  return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${m.cls}">${m.label}</span>`;
+}
+
+function recBadge(status: string) {
+  const map: Record<string, { label: string; cls: string }> = {
+    pending: { label: 'Chờ xác nhận', cls: 'bg-amber-100 text-amber-800' },
+    confirmed: { label: 'Đã xác nhận', cls: 'bg-blue-100 text-blue-800' },
+    rejected: { label: 'Bỏ qua', cls: 'bg-slate-200 text-slate-600' },
+  };
+  const m = map[status] ?? { label: status, cls: 'bg-slate-100 text-slate-600' };
+  return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${m.cls}">${m.label}</span>`;
+}
+
+// ===== Danh sách =====
+invoiceRoutes.get('/', async (c) => {
+  const user = c.get('user')!;
+  const status = c.req.query('status') ?? 'all';
+  const branch = c.req.query('branch') ?? '';
+  const q = (c.req.query('q') ?? '').trim();
+
+  const conds: string[] = [];
+  const params: unknown[] = [];
+  let n = 0;
+  if (status !== 'all') {
+    conds.push(`status = ?${++n}`);
+    params.push(status);
+  }
+  if (branch) {
+    conds.push(`branch = ?${++n}`);
+    params.push(branch);
+  }
+  if (q) {
+    conds.push(`(LOWER(invoice_no) LIKE ?${++n} OR LOWER(seller_name) LIKE ?${n} OR LOWER(supplier_short) LIKE ?${n})`);
+    params.push(`%${q.toLowerCase()}%`);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  params.push(200);
+  const rows =
+    (
+      await c.env.DB.prepare(
+        `SELECT id, status, serial, invoice_no, invoice_date, seller_name, supplier_short, branch,
+                subtotal, vat_amount, total, payment_status, paid_amount, proposal_code
+           FROM supplier_invoice ${where} ORDER BY id DESC LIMIT ?${++n}`,
+      )
+        .bind(...params)
+        .all<InvoiceRow>()
+    ).results ?? [];
+
+  const branches =
+    (await c.env.DB.prepare(`SELECT name FROM branch WHERE active = 1 ORDER BY sort_order`).all<{ name: string }>())
+      .results ?? [];
+  const pendingCount =
+    (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM supplier_invoice WHERE status = 'pending'`).first<{ n: number }>())
+      ?.n ?? 0;
+
+  return c.html(page({ title: 'Hóa đơn NCC', user, body: listBody(rows, { status, branch, q, branches, pendingCount }) }));
+});
+
+function listBody(
+  rows: InvoiceRow[],
+  f: { status: string; branch: string; q: string; branches: { name: string }[]; pendingCount: number },
+) {
+  const tab = (key: string, label: string) =>
+    html`<a href="/invoices?status=${key}"
+      class="px-3 py-1.5 rounded-md text-sm ${f.status === key ? 'bg-blue-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}">${label}</a>`;
+  return html`
+    <div class="flex items-center justify-between mb-4">
+      <h1 class="text-xl font-semibold text-slate-800">🧾 Hóa đơn NCC ${f.pendingCount > 0 ? html`<span class="ml-2 align-middle text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">${String(f.pendingCount)} chờ xác nhận</span>` : ''}</h1>
+    </div>
+    <div class="flex flex-wrap gap-2 mb-3">
+      ${tab('all', 'Tất cả')} ${tab('pending', 'Chờ xác nhận')} ${tab('confirmed', 'Đã xác nhận')} ${tab('rejected', 'Bỏ qua')}
+    </div>
+    <form method="get" action="/invoices" class="flex flex-wrap gap-2 mb-4 items-end">
+      <input type="hidden" name="status" value="${f.status}" />
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Nhà máy
+        <select name="branch" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm">
+          <option value="">— Tất cả —</option>
+          ${f.branches.map((b) => html`<option value="${b.name}" ${f.branch === b.name ? 'selected' : ''}>${b.name}</option>`)}
+        </select>
+      </label>
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Tìm (số HĐ / NCC)
+        <input type="text" name="q" value="${f.q}" placeholder="vd 632 hoặc H&T" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm" />
+      </label>
+      <button class="px-4 py-1.5 bg-blue-900 text-white rounded-md text-sm">Lọc</button>
+    </form>
+    ${rows.length === 0
+      ? html`<div class="text-center text-slate-400 bg-white rounded-lg ring-1 ring-slate-200 py-12">Chưa có hóa đơn.</div>`
+      : html`<div class="overflow-x-auto bg-white rounded-lg ring-1 ring-slate-200">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
+            <tr>
+              <th class="text-left px-3 py-2">Ngày HĐ</th>
+              <th class="text-left px-3 py-2">Ký hiệu / Số</th>
+              <th class="text-left px-3 py-2">NCC</th>
+              <th class="text-left px-3 py-2">Nhà máy</th>
+              <th class="text-right px-3 py-2">Tổng TT</th>
+              <th class="text-center px-3 py-2">Thanh toán</th>
+              <th class="text-center px-3 py-2">Trạng thái</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(
+              (r) => html`<tr class="border-t border-slate-100 hover:bg-blue-50/40">
+              <td class="px-3 py-2 whitespace-nowrap">
+                <a href="/invoices/${String(r.id)}" class="text-blue-700 hover:underline">${esc(r.invoice_date)}</a>
+              </td>
+              <td class="px-3 py-2 whitespace-nowrap text-slate-600">${esc(r.serial)} · <b>${esc(r.invoice_no)}</b></td>
+              <td class="px-3 py-2">${esc(r.supplier_short ?? r.seller_name)}</td>
+              <td class="px-3 py-2">${r.branch ? esc(r.branch) : html`<span class="text-rose-500 text-xs">chưa gán</span>`}</td>
+              <td class="px-3 py-2 text-right font-medium whitespace-nowrap">${money(r.total)}</td>
+              <td class="px-3 py-2 text-center">${payBadge(r.payment_status)}</td>
+              <td class="px-3 py-2 text-center">${recBadge(r.status)}</td>
+            </tr>`,
+            )}
+          </tbody>
+        </table>
+      </div>`}
+    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · tự động đọc từ mail HĐĐT về hộp thư chung.</p>`;
+}
+
+// ===== Chi tiết + xác nhận =====
+invoiceRoutes.get('/:id{[0-9]+}', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  const inv = await c.env.DB.prepare(`SELECT * FROM supplier_invoice WHERE id = ?1`).bind(id).first<InvoiceRow>();
+  if (!inv) throw notFound('Hóa đơn không tồn tại');
+  const lines =
+    (
+      await c.env.DB.prepare(
+        `SELECT seq, item_name, unit, qty, unit_price, vat_rate, amount
+           FROM supplier_invoice_line WHERE invoice_id = ?1 ORDER BY seq`,
+      )
+        .bind(id)
+        .all<{ seq: number; item_name: string; unit: string; qty: number; unit_price: number; vat_rate: number; amount: number }>()
+    ).results ?? [];
+  const branches =
+    (await c.env.DB.prepare(`SELECT name FROM branch WHERE active = 1 ORDER BY sort_order`).all<{ name: string }>())
+      .results ?? [];
+  return c.html(page({ title: `HĐ ${esc(inv.invoice_no)}`, user, body: detailBody(inv, lines, branches) }));
+});
+
+function detailBody(
+  inv: InvoiceRow,
+  lines: { seq: number; item_name: string; unit: string; qty: number; unit_price: number; vat_rate: number; amount: number }[],
+  branches: { name: string }[],
+) {
+  const field = (label: string, value: unknown) =>
+    html`<div><div class="text-xs text-slate-400">${label}</div><div class="text-slate-800">${esc(value) || '—'}</div></div>`;
+  return html`
+    <div class="mb-4 flex items-center gap-3">
+      <a href="/invoices" class="text-sm text-slate-500 hover:underline">← Danh sách</a>
+      ${recBadge(inv.status)} ${payBadge(inv.payment_status)}
+      ${inv.invoice_url ? html`<a href="${inv.invoice_url}" target="_blank" class="text-sm text-blue-600 hover:underline ml-auto">Xem HĐ gốc ↗</a>` : ''}
+    </div>
+
+    <div class="bg-white rounded-lg ring-1 ring-slate-200 p-5 mb-4">
+      <div class="flex justify-between items-start mb-4">
+        <div>
+          <h1 class="text-lg font-semibold text-slate-800">Hóa đơn GTGT</h1>
+          <div class="text-sm text-slate-500">Ký hiệu <b>${esc(inv.serial)}</b> · Số <b>${esc(inv.invoice_no)}</b> · Ngày ${esc(inv.invoice_date)}</div>
+        </div>
+        <div class="text-right">
+          <div class="text-xs text-slate-400">Tổng thanh toán</div>
+          <div class="text-2xl font-bold text-blue-900">${money(inv.total)}</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div class="space-y-2">
+          <div class="font-medium text-slate-600 border-b pb-1">Bên bán</div>
+          ${field('Tên', inv.seller_name)} ${field('MST', inv.seller_tax_code)} ${field('Địa chỉ', inv.seller_address)}
+        </div>
+        <div class="space-y-2">
+          <div class="font-medium text-slate-600 border-b pb-1">Bên mua</div>
+          ${field('Tên', inv.buyer_name)} ${field('MST', inv.buyer_tax_code)} ${field('Địa chỉ', inv.buyer_address)}
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg ring-1 ring-slate-200 overflow-x-auto mb-4">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+          <tr><th class="px-3 py-2 text-left">STT</th><th class="px-3 py-2 text-left">Tên hàng</th><th class="px-3 py-2">ĐVT</th>
+          <th class="px-3 py-2 text-right">SL</th><th class="px-3 py-2 text-right">Đơn giá</th><th class="px-3 py-2 text-right">Thành tiền</th></tr>
+        </thead>
+        <tbody>
+          ${lines.map(
+            (l) => html`<tr class="border-t border-slate-100">
+            <td class="px-3 py-2">${String(l.seq)}</td><td class="px-3 py-2">${esc(l.item_name)}</td>
+            <td class="px-3 py-2 text-center">${esc(l.unit)}</td><td class="px-3 py-2 text-right">${money(l.qty)}</td>
+            <td class="px-3 py-2 text-right">${money(l.unit_price)}</td><td class="px-3 py-2 text-right">${money(l.amount)}</td></tr>`,
+          )}
+        </tbody>
+        <tfoot class="text-sm">
+          <tr class="border-t border-slate-200"><td colspan="5" class="px-3 py-1.5 text-right text-slate-500">Cộng tiền hàng</td><td class="px-3 py-1.5 text-right">${money(inv.subtotal)}</td></tr>
+          <tr><td colspan="5" class="px-3 py-1.5 text-right text-slate-500">Thuế GTGT (${pct(inv.vat_rate)})</td><td class="px-3 py-1.5 text-right">${money(inv.vat_amount)}</td></tr>
+          <tr class="font-semibold"><td colspan="5" class="px-3 py-1.5 text-right">Tổng thanh toán</td><td class="px-3 py-1.5 text-right text-blue-900">${money(inv.total)}</td></tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <!-- Xác nhận / phân loại -->
+    <form method="post" action="/invoices/${String(inv.id)}/confirm" class="bg-white rounded-lg ring-1 ring-slate-200 p-5 mb-4">
+      <div class="font-medium text-slate-700 mb-3">Phân loại & xác nhận (KSNB)</div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+        <label class="flex flex-col gap-1">Nhà máy
+          <select name="branch" class="px-2 py-1.5 border border-slate-300 rounded-md">
+            <option value="">— Chọn —</option>
+            ${branches.map((b) => html`<option value="${b.name}" ${inv.branch === b.name ? 'selected' : ''}>${b.name}</option>`)}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">Tên ngắn NCC
+          <input type="text" name="supplier_short" value="${esc(inv.supplier_short)}" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+        </label>
+        <label class="flex flex-col gap-1">Phiếu đề xuất
+          <input type="text" name="proposal_code" value="${esc(inv.proposal_code)}" placeholder="vd 250205_02.02_SK" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+        </label>
+      </div>
+      <label class="flex items-center gap-2 mt-3 text-sm text-slate-600">
+        <input type="checkbox" name="remember_map" value="1" checked class="rounded" />
+        Ghi nhớ map MST bên mua (${esc(inv.buyer_tax_code)}) → nhà máy này cho các HĐ sau
+      </label>
+      <div class="mt-4 flex gap-2">
+        <button class="px-4 py-2 bg-blue-900 text-white rounded-md text-sm">${inv.status === 'confirmed' ? 'Cập nhật' : 'Xác nhận'}</button>
+      </div>
+      ${inv.confirmed_at ? html`<p class="text-xs text-slate-400 mt-2">Xác nhận bởi ${esc(inv.confirmed_by_name)} lúc ${vnDisplay(inv.confirmed_at)}</p>` : ''}
+    </form>
+
+    <!-- Theo dõi thanh toán -->
+    <form method="post" action="/invoices/${String(inv.id)}/payment" class="bg-white rounded-lg ring-1 ring-slate-200 p-5 mb-4">
+      <div class="font-medium text-slate-700 mb-3">Công nợ / thanh toán</div>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+        <label class="flex flex-col gap-1">Trạng thái
+          <select name="payment_status" class="px-2 py-1.5 border border-slate-300 rounded-md">
+            ${['unpaid', 'partial', 'paid'].map((s) => html`<option value="${s}" ${inv.payment_status === s ? 'selected' : ''}>${s === 'unpaid' ? 'Chưa TT' : s === 'partial' ? 'TT một phần' : 'Đã TT'}</option>`)}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1">Đã thanh toán
+          <input type="number" name="paid_amount" value="${esc(inv.paid_amount)}" step="any" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+        </label>
+        <label class="flex flex-col gap-1">Ngày nộp chứng từ
+          <input type="date" name="doc_submit_date" value="${esc(inv.doc_submit_date)}" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+        </label>
+        <label class="flex flex-col gap-1">Ngày nhận hàng
+          <input type="date" name="receive_date" value="${esc(inv.receive_date)}" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+        </label>
+      </div>
+      <label class="flex flex-col gap-1 mt-3 text-sm">Ghi chú
+        <input type="text" name="note" value="${esc(inv.note)}" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+      </label>
+      <div class="mt-4"><button class="px-4 py-2 bg-emerald-700 text-white rounded-md text-sm">Lưu công nợ</button></div>
+    </form>
+
+    <form method="post" action="/invoices/${String(inv.id)}/reject" onsubmit="return confirm('Bỏ qua hóa đơn này?')">
+      <button class="text-sm text-slate-400 hover:text-rose-600">Bỏ qua hóa đơn này</button>
+    </form>`;
+}
+
+// ===== Actions =====
+invoiceRoutes.post('/:id{[0-9]+}/confirm', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  const b = await c.req.parseBody();
+  const branch = String(b.branch ?? '').trim();
+  const supplierShort = String(b.supplier_short ?? '').trim() || null;
+  const proposalCode = String(b.proposal_code ?? '').trim() || null;
+  const rememberMap = b.remember_map === '1';
+  if (!branch) throw badRequest('Phải chọn nhà máy');
+
+  const inv = await c.env.DB.prepare(`SELECT buyer_tax_code, buyer_name, seller_tax_code FROM supplier_invoice WHERE id = ?1`)
+    .bind(id)
+    .first<{ buyer_tax_code: string | null; buyer_name: string | null; seller_tax_code: string | null }>();
+  if (!inv) throw notFound('Hóa đơn không tồn tại');
+
+  await c.env.DB.prepare(
+    `UPDATE supplier_invoice
+        SET branch = ?2, supplier_short = ?3, proposal_code = ?4, status = 'confirmed',
+            confirmed_at = ?5, confirmed_by_user_id = ?6, confirmed_by_name = ?7, updated_at = ?5
+      WHERE id = ?1`,
+  )
+    .bind(id, branch, supplierShort, proposalCode, nowIso(), user.id, user.name)
+    .run();
+
+  // Ghi nhớ map MST bên mua → nhà máy (auto-fill HĐ sau).
+  if (rememberMap && inv.buyer_tax_code) {
+    await c.env.DB.prepare(
+      `INSERT INTO buyer_branch_map (buyer_tax_code, buyer_name, branch)
+       VALUES (?1, ?2, ?3)
+       ON CONFLICT (buyer_tax_code) DO UPDATE SET branch = EXCLUDED.branch, buyer_name = EXCLUDED.buyer_name, updated_at = iso_now()`,
+    )
+      .bind(inv.buyer_tax_code, inv.buyer_name, branch)
+      .run();
+  }
+  // Cập nhật tên ngắn NCC.
+  if (supplierShort && inv.seller_tax_code) {
+    await c.env.DB.prepare(
+      `UPDATE supplier_alias SET short_name = ?2, updated_at = iso_now() WHERE seller_tax_code = ?1`,
+    )
+      .bind(inv.seller_tax_code, supplierShort)
+      .run();
+  }
+  return c.redirect(`/invoices/${id}`);
+});
+
+invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
+  const id = Number(c.req.param('id'));
+  const b = await c.req.parseBody();
+  const paymentStatus = String(b.payment_status ?? 'unpaid');
+  const paidAmount = b.paid_amount ? Number(b.paid_amount) : 0;
+  await c.env.DB.prepare(
+    `UPDATE supplier_invoice
+        SET payment_status = ?2, paid_amount = ?3, doc_submit_date = ?4, receive_date = ?5, note = ?6, updated_at = iso_now()
+      WHERE id = ?1`,
+  )
+    .bind(
+      id,
+      paymentStatus,
+      paidAmount,
+      String(b.doc_submit_date ?? '') || null,
+      String(b.receive_date ?? '') || null,
+      String(b.note ?? '') || null,
+    )
+    .run();
+  return c.redirect(`/invoices/${id}`);
+});
+
+invoiceRoutes.post('/:id{[0-9]+}/reject', async (c) => {
+  const id = Number(c.req.param('id'));
+  await c.env.DB.prepare(`UPDATE supplier_invoice SET status = 'rejected', updated_at = iso_now() WHERE id = ?1`)
+    .bind(id)
+    .run();
+  return c.redirect('/invoices');
+});
+
+// ===== Admin: map MST bên mua → nhà máy =====
+invoiceRoutes.use('/admin/*', requireAdmin);
+
+// Trigger ingest thủ công (admin) — để test, không phải chờ cron */10.
+invoiceRoutes.post('/admin/ingest-now', async (c) => {
+  const r = await runInvoiceIngest(c.env);
+  const msg = `Quét ${r.scanned} mail mới · tạo ${r.parsed} HĐ · trùng ${r.duplicate} · không phải HĐ ${r.noInvoice} · lỗi ${r.errors}`;
+  return c.redirect(`/invoices/admin/buyer-map?flash=${encodeURIComponent(msg)}`);
+});
+
+invoiceRoutes.get('/admin/buyer-map', async (c) => {
+  const user = c.get('user')!;
+  const flash = c.req.query('flash') ?? '';
+  const maps =
+    (
+      await c.env.DB.prepare(
+        `SELECT buyer_tax_code, buyer_name, branch FROM buyer_branch_map ORDER BY branch, buyer_name`,
+      ).all<{ buyer_tax_code: string; buyer_name: string | null; branch: string }>()
+    ).results ?? [];
+  const branches =
+    (await c.env.DB.prepare(`SELECT name FROM branch WHERE active = 1 ORDER BY sort_order`).all<{ name: string }>())
+      .results ?? [];
+  return c.html(page({ title: 'Map nhà máy', user, body: buyerMapBody(maps, branches, flash) }));
+});
+
+function buyerMapBody(
+  maps: { buyer_tax_code: string; buyer_name: string | null; branch: string }[],
+  branches: { name: string }[],
+  flash = '',
+) {
+  return html`
+    <div class="mb-4 flex items-center gap-3">
+      <a href="/invoices" class="text-sm text-slate-500 hover:underline">← Hóa đơn</a>
+      <h1 class="text-xl font-semibold text-slate-800">🏭 Map pháp nhân (MST mua) → Nhà máy</h1>
+    </div>
+    ${flash ? html`<div class="mb-4 p-3 rounded-md bg-emerald-50 text-emerald-800 text-sm ring-1 ring-emerald-200">${flash}</div>` : ''}
+    <p class="text-sm text-slate-500 mb-4">HĐ về sẽ tự gán nhà máy theo MST bên mua. Map cũng tự cập nhật khi bạn xác nhận 1 HĐ.</p>
+    <form method="post" action="/invoices/admin/ingest-now" class="mb-4">
+      <button class="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-sm">⟳ Chạy ingest ngay (test — không chờ cron)</button>
+    </form>
+    <form method="post" action="/invoices/admin/buyer-map" class="flex flex-wrap gap-2 items-end bg-white p-4 rounded-lg ring-1 ring-slate-200 mb-4">
+      <label class="flex flex-col text-xs text-slate-500 gap-1">MST bên mua
+        <input type="text" name="buyer_tax_code" required class="px-2 py-1.5 border border-slate-300 rounded-md text-sm" />
+      </label>
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Tên (tuỳ chọn)
+        <input type="text" name="buyer_name" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm" />
+      </label>
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Nhà máy
+        <select name="branch" required class="px-2 py-1.5 border border-slate-300 rounded-md text-sm">
+          ${branches.map((b) => html`<option value="${b.name}">${b.name}</option>`)}
+        </select>
+      </label>
+      <button class="px-4 py-1.5 bg-blue-900 text-white rounded-md text-sm">Thêm / cập nhật</button>
+    </form>
+    <div class="bg-white rounded-lg ring-1 ring-slate-200 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase"><tr>
+          <th class="px-3 py-2 text-left">MST bên mua</th><th class="px-3 py-2 text-left">Tên</th>
+          <th class="px-3 py-2 text-left">Nhà máy</th><th class="px-3 py-2"></th></tr></thead>
+        <tbody>
+          ${maps.length === 0
+            ? html`<tr><td colspan="4" class="px-3 py-8 text-center text-slate-400">Chưa có map nào.</td></tr>`
+            : maps.map(
+                (m) => html`<tr class="border-t border-slate-100">
+                <td class="px-3 py-2 font-mono">${m.buyer_tax_code}</td>
+                <td class="px-3 py-2">${esc(m.buyer_name)}</td>
+                <td class="px-3 py-2">${m.branch}</td>
+                <td class="px-3 py-2 text-right">
+                  <form method="post" action="/invoices/admin/buyer-map/delete" class="inline">
+                    <input type="hidden" name="buyer_tax_code" value="${m.buyer_tax_code}" />
+                    <button class="text-rose-500 hover:underline text-xs">Xoá</button>
+                  </form>
+                </td></tr>`,
+              )}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+invoiceRoutes.post('/admin/buyer-map', async (c) => {
+  const b = await c.req.parseBody();
+  const taxCode = String(b.buyer_tax_code ?? '').trim();
+  const branch = String(b.branch ?? '').trim();
+  const buyerName = String(b.buyer_name ?? '').trim() || null;
+  if (!taxCode || !branch) throw badRequest('Thiếu MST hoặc nhà máy');
+  await c.env.DB.prepare(
+    `INSERT INTO buyer_branch_map (buyer_tax_code, buyer_name, branch)
+     VALUES (?1, ?2, ?3)
+     ON CONFLICT (buyer_tax_code) DO UPDATE SET branch = EXCLUDED.branch, buyer_name = EXCLUDED.buyer_name, updated_at = iso_now()`,
+  )
+    .bind(taxCode, buyerName, branch)
+    .run();
+  return c.redirect('/invoices/admin/buyer-map');
+});
+
+invoiceRoutes.post('/admin/buyer-map/delete', async (c) => {
+  const b = await c.req.parseBody();
+  await c.env.DB.prepare(`DELETE FROM buyer_branch_map WHERE buyer_tax_code = ?1`)
+    .bind(String(b.buyer_tax_code ?? ''))
+    .run();
+  return c.redirect('/invoices/admin/buyer-map');
+});

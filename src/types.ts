@@ -18,6 +18,8 @@ export type Bindings = {
   APP_BASE_URL: string;
   ENTRA_REDIRECT_PATH: string;
   NO_REPLY_MAILBOX: string;
+  // Shared mailbox nhận hóa đơn NCC (ingest đọc qua Graph Mail.Read). Trống = tắt ingest.
+  INVOICE_MAILBOX: string;
   VN_TZ_OFFSET_MINUTES: string;
   // CSV email — chỉ những user trong list mới gọi được /admin/* + /api/proposals?scope=ksnb_inbox
   // + ksnb-complete. Để trống = chặn tất cả.

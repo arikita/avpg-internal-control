@@ -35,6 +35,7 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
           ? html`
               <a href="/app" class="text-blue-100 hover:text-yellow-400 transition">Dashboard</a>
               <a href="/p/new" class="text-blue-100 hover:text-yellow-400 transition">Tạo phiếu</a>
+              <a href="/invoices" class="text-blue-100 hover:text-yellow-400 transition">Hóa đơn NCC</a>
               ${user.isAdmin
                 ? html`<div class="relative" x-data="{ o: false }">
                     <button @click="o=!o" class="text-blue-100 hover:text-yellow-400 transition">Quản trị ▾</button>
@@ -42,6 +43,7 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
                       class="absolute right-0 mt-2 w-48 bg-white text-slate-700 rounded-md shadow-lg ring-1 ring-slate-200 py-1 z-50">
                       <a href="/admin/approvers" class="block px-3 py-2 text-sm hover:bg-blue-50">Người duyệt</a>
                       <a href="/admin/audit" class="block px-3 py-2 text-sm hover:bg-blue-50">Nhật ký duyệt</a>
+                      <a href="/invoices/admin/buyer-map" class="block px-3 py-2 text-sm hover:bg-blue-50">Map nhà máy (HĐ)</a>
                     </div>
                   </div>`
                 : ''}

@@ -11,6 +11,7 @@ import { PgKv } from './lib/pg';
 import { runMigrations } from './lib/migrate-pg';
 import { runNotificationQueue } from './lib/notifications';
 import { runAccountSync } from './lib/account-sync';
+import { runInvoiceIngest } from './lib/invoice-ingest';
 
 async function main(): Promise<void> {
   const env = buildNodeEnv();
@@ -40,6 +41,10 @@ async function main(): Promise<void> {
       .cleanup()
       .then((n) => n && console.log(`[cron] ephemeral_kv cleanup ${n}`))
       .catch((e) => console.error('[cron] kv cleanup', e));
+  });
+  // */10 → ingest hóa đơn NCC từ shared mailbox (tắt nếu INVOICE_MAILBOX trống).
+  cron.schedule('*/10 * * * *', () => {
+    runInvoiceIngest(env).catch((e) => console.error('[cron] invoice-ingest', e));
   });
 }
 

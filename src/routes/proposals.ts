@@ -1110,6 +1110,71 @@ proposalRoutes.post('/:id{[0-9]+}/procurement/event', async (c) => {
   return c.json(await loadProcurement(c.env, id));
 });
 
+// Sửa 1 hoạt động mua sắm — ghi vết old→new vào audit_events.
+proposalRoutes.put('/:id{[0-9]+}/procurement/event/:eventId{[0-9]+}', async (c) => {
+  const id = Number(c.req.param('id'));
+  const eventId = Number(c.req.param('eventId'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB được theo dõi mua hàng');
+  const row = await loadProposal(c, id);
+  if (row.proposal_type !== 'purchase' || row.status !== 'completed') {
+    throw unprocessable('Chỉ phiếu mua hàng đã duyệt mới theo dõi mua sắm');
+  }
+  const before = await c.env.DB.prepare(
+    `SELECT type, event_date, percent, note FROM procurement_event WHERE id = ?1 AND proposal_id = ?2`,
+  )
+    .bind(eventId, id)
+    .first<{ type: string; event_date: string | null; percent: number | null; note: string | null }>();
+  if (!before) throw notFound('Hoạt động không tồn tại');
+  const body = await c.req.json<{ type?: string; event_date?: string; percent?: number; note?: string }>();
+  const type = body.type ?? '';
+  if (!PROC_TYPES.includes(type)) throw badRequest('Loại hoạt động không hợp lệ');
+  const percent = type === 'payment' && body.percent != null ? Number(body.percent) : null;
+  const eventDate = (body.event_date ?? '').trim() || null;
+  const note = (body.note ?? '').trim() || null;
+  await c.env.DB.prepare(
+    `UPDATE procurement_event SET type = ?1, event_date = ?2, percent = ?3, note = ?4
+       WHERE id = ?5 AND proposal_id = ?6`,
+  )
+    .bind(type, eventDate, percent, note, eventId, id)
+    .run();
+  const actx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'procurement_event_edit', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+    proposalId: id, action: 'edit', channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+    detail: JSON.stringify({ eventId, before, after: { type, event_date: eventDate, percent, note } }),
+  });
+  return c.json(await loadProcurement(c.env, id));
+});
+
+// Xoá 1 hoạt động mua sắm — ghi vết bản ghi đã xoá vào audit_events.
+proposalRoutes.delete('/:id{[0-9]+}/procurement/event/:eventId{[0-9]+}', async (c) => {
+  const id = Number(c.req.param('id'));
+  const eventId = Number(c.req.param('eventId'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB được theo dõi mua hàng');
+  const row = await loadProposal(c, id);
+  if (row.proposal_type !== 'purchase' || row.status !== 'completed') {
+    throw unprocessable('Chỉ phiếu mua hàng đã duyệt mới theo dõi mua sắm');
+  }
+  const before = await c.env.DB.prepare(
+    `SELECT type, event_date, percent, note FROM procurement_event WHERE id = ?1 AND proposal_id = ?2`,
+  )
+    .bind(eventId, id)
+    .first<{ type: string; event_date: string | null; percent: number | null; note: string | null }>();
+  if (!before) throw notFound('Hoạt động không tồn tại');
+  await c.env.DB.prepare(`DELETE FROM procurement_event WHERE id = ?1 AND proposal_id = ?2`)
+    .bind(eventId, id)
+    .run();
+  const actx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'procurement_event_delete', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+    proposalId: id, action: 'delete', channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+    detail: JSON.stringify({ eventId, deleted: before }),
+  });
+  return c.json(await loadProcurement(c.env, id));
+});
+
 // Đánh dấu hoàn tất mua sắm (đóng giai đoạn).
 proposalRoutes.post('/:id{[0-9]+}/procurement/done', async (c) => {
   const id = Number(c.req.param('id'));

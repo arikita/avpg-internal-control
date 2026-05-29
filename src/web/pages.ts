@@ -1082,6 +1082,16 @@ export function proposalDetailPage(
   const procHead = (procurement?.head ?? null) as Record<string, unknown> | null;
   const procEvents = procurement?.events ?? [];
   const procStatus = (procHead?.status as string) ?? 'pending';
+  const procEventsJson = JSON.stringify(
+    procEvents.map((e) => ({
+      id: Number(e.id),
+      type: (e.type as string) ?? 'order',
+      event_date: (e.event_date as string) ?? '',
+      percent: e.percent ?? null,
+      note: (e.note as string) ?? '',
+    })),
+  );
+  const procEditable = isKsnb && procStatus !== 'done';
   const procurementSection: Html =
     isPr && status === 'completed'
       ? html`
@@ -1097,7 +1107,13 @@ export function proposalDetailPage(
                 (e) => html`<li class="text-sm border-l-2 border-blue-200 pl-3">
                   <span class="font-medium text-slate-800">${procTypeLabel(e.type as string)}</span>${e.percent != null ? html`<span class="text-blue-700"> · ${String(e.percent)}%</span>` : ''}${e.event_date ? html`<span class="text-slate-500"> · ${e.event_date as string}</span>` : ''}
                   ${e.note ? html`<div class="text-slate-600 italic">"${e.note as string}"</div>` : ''}
-                  <div class="text-xs text-slate-400">${(e.created_by_name as string) ?? ''}</div>
+                  <div class="flex items-center gap-2 text-xs text-slate-400">
+                    <span>${(e.created_by_name as string) ?? ''}</span>
+                    ${procEditable
+                      ? html`<button @click="procStartEdit(${Number(e.id)})" class="text-blue-700 hover:underline">Sửa</button>
+                          <button @click="procDeleteEvent(${Number(e.id)})" class="text-rose-600 hover:underline">Xoá</button>`
+                      : ''}
+                  </div>
                 </li>`,
               )}
             </ul>`}
@@ -1117,9 +1133,12 @@ export function proposalDetailPage(
                   <input x-show="procType==='payment'" x-model="procPct" type="number" min="0" max="100" placeholder="% thanh toán" class="px-2 py-1.5 border border-slate-300 rounded text-sm" />
                   <input x-model="procNote" type="text" placeholder="Ghi chú" class="px-2 py-1.5 border border-slate-300 rounded text-sm col-span-2" />
                 </div>
+                <div x-show="editingId!==null" class="text-xs text-amber-700">Đang sửa hoạt động — bấm Lưu để cập nhật, hoặc Huỷ.</div>
                 <div class="flex gap-2">
-                  <button @click="procAddEvent()" :disabled="busy" class="px-3 py-1.5 bg-blue-700 hover:bg-blue-800 text-white rounded text-sm font-medium disabled:opacity-50">+ Thêm hoạt động</button>
-                  <button @click="procDone()" :disabled="busy" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">Hoàn tất mua sắm</button>
+                  <button x-show="editingId===null" @click="procAddEvent()" :disabled="busy" class="px-3 py-1.5 bg-blue-700 hover:bg-blue-800 text-white rounded text-sm font-medium disabled:opacity-50">+ Thêm hoạt động</button>
+                  <button x-show="editingId!==null" @click="procSaveEdit()" :disabled="busy" class="px-3 py-1.5 bg-blue-700 hover:bg-blue-800 text-white rounded text-sm font-medium disabled:opacity-50">Lưu sửa</button>
+                  <button x-show="editingId!==null" @click="procCancelEdit()" :disabled="busy" class="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-sm font-medium disabled:opacity-50">Huỷ</button>
+                  <button x-show="editingId===null" @click="procDone()" :disabled="busy" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm font-medium disabled:opacity-50">Hoàn tất mua sắm</button>
                 </div>
               </div>`
             : html`<div class="text-xs text-slate-400">Chỉ KSNB cập nhật được mua sắm.</div>`}
@@ -1323,7 +1342,7 @@ export function proposalDetailPage(
     : html``;
 
   const body = html`
-    <div x-data="detail(${proposal.id})" class="max-w-3xl mx-auto space-y-4">
+    <div x-data="detail(${proposal.id}, ${procEventsJson})" class="max-w-3xl mx-auto space-y-4">
       <div class="flex items-center justify-between">
         <a href="/app" class="text-sm text-slate-500 hover:text-slate-700">← Hộp phiếu</a>
         <div class="flex items-center gap-3">
@@ -1415,9 +1434,10 @@ export function proposalDetailPage(
     </div>
 
     <script>
-      function detail(id) {
+      function detail(id, events) {
         return {
           id,
+          events: events || [],
           busy: false,
           rejectMode: false,
           comment: '',
@@ -1425,6 +1445,7 @@ export function proposalDetailPage(
           procDate: '',
           procPct: '',
           procNote: '',
+          editingId: null,
           async action(kind) {
             this._do(kind, null, null);
           },
@@ -1468,6 +1489,40 @@ export function proposalDetailPage(
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ note: this.procNote }),
               });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+              window.location.reload();
+            } catch (e) { alert(e.message); this.busy = false; }
+          },
+          procStartEdit(eid) {
+            const ev = (this.events || []).find((e) => e.id === eid);
+            if (!ev) return;
+            this.editingId = eid;
+            this.procType = ev.type;
+            this.procDate = ev.event_date || '';
+            this.procPct = ev.percent == null ? '' : String(ev.percent);
+            this.procNote = ev.note || '';
+          },
+          procCancelEdit() {
+            this.editingId = null;
+            this.procType = 'order'; this.procDate = ''; this.procPct = ''; this.procNote = '';
+          },
+          async procSaveEdit() {
+            this.busy = true;
+            try {
+              const r = await fetch('/api/proposals/' + this.id + '/procurement/event/' + this.editingId, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ type: this.procType, event_date: this.procDate, percent: this.procPct === '' ? null : Number(this.procPct), note: this.procNote }),
+              });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+              window.location.reload();
+            } catch (e) { alert(e.message); this.busy = false; }
+          },
+          async procDeleteEvent(eid) {
+            if (!confirm('Xoá hoạt động này?')) return;
+            this.busy = true;
+            try {
+              const r = await fetch('/api/proposals/' + this.id + '/procurement/event/' + eid, { method: 'DELETE' });
               if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
               window.location.reload();
             } catch (e) { alert(e.message); this.busy = false; }

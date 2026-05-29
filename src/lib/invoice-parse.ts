@@ -256,10 +256,10 @@ function tag(xml: string, name: string): string | null {
 function tagNum(xml: string, name: string): number | null {
   const v = tag(xml, name);
   if (v == null) return null;
-  const n = parseVnNumber(v);
-  if (n != null) return n;
-  const raw = Number(v);
-  return Number.isFinite(raw) ? raw : null;
+  // XML TT78 dùng dấu CHẤM làm thập phân (vd 5715703.000000, 1833.000000) — KHÔNG ngăn nghìn.
+  // Không dùng parseVnNumber (vốn coi '.' là ngăn nghìn → sai 10^6 lần).
+  const n = Number(v.replace(/[^\d.\-]/g, ''));
+  return Number.isFinite(n) ? n : null;
 }
 function block(xml: string, name: string): string | null {
   const m = xml.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)</${name}>`, 'i'));
@@ -334,9 +334,44 @@ export type ProviderAdapter = {
   name: string;
   // Nhận diện URL thuộc nhà cung cấp này.
   matchUrl: (url: string) => boolean;
-  // Parse HTML trang xem HĐ → InvoiceData.
-  parseHtml: (html: string) => InvoiceData;
+  // Parse HTML trang xem HĐ → InvoiceData (khi ingest tự fetch HTML).
+  parseHtml?: (html: string) => InvoiceData;
+  // Tự fetch + parse (vd gọi API portal trả XML/JSON) thay cho fetch HTML mặc định.
+  fetchParse?: (url: string) => Promise<InvoiceData>;
 };
+
+// MISA meInvoice: link mail dạng meinvoice.vn/tra-cuu/?sc=<id>&m=<email>&n=<name>...
+// Trang là SPA; nhưng API POST /tra-cuu/GetInvoiceDataByTransactionID trả JSON {data: <XML TT78>}
+// gọi được trực tiếp (không cần cookie/headless) → parse bằng parseTT78Xml dùng chung.
+async function fetchMeInvoice(url: string): Promise<InvoiceData> {
+  const q = new URL(url).searchParams;
+  const body = new URLSearchParams({
+    transactionID: q.get('sc') ?? '',
+    isReceiveEmail: 'true',
+    email: q.get('m') ?? '',
+    name: q.get('n') ?? '',
+    cc: q.get('c') ?? '',
+    bcc: q.get('b') ?? '',
+    dType: q.get('d') ?? '0',
+    tempType: q.get('t') ?? '1',
+  });
+  const res = await fetch('https://www.meinvoice.vn/tra-cuu/GetInvoiceDataByTransactionID', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest',
+      Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0',
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) throw new Error(`meinvoice API ${res.status}`);
+  const json = (await res.json()) as { success?: boolean; data?: string };
+  if (!json.success || !json.data) throw new Error('meinvoice API không trả data');
+  const inv = parseTT78Xml(json.data); // data = XML chuẩn TT78
+  inv.provider = 'meinvoice';
+  return inv;
+}
 
 export const PROVIDERS: ProviderAdapter[] = [
   {
@@ -344,8 +379,13 @@ export const PROVIDERS: ProviderAdapter[] = [
     matchUrl: (u) => /easyinvoice\.com\.vn/i.test(u),
     parseHtml: parseEasyInvoiceHtml,
   },
-  // TODO: thêm adapter VNPT (vninvoice/sinvoice), Viettel (sinvoice.viettel), MISA (meinvoice),
-  // BKAV (van.../ehoadon), FPT... khi có mẫu mail thật.
+  {
+    name: 'meinvoice',
+    // chỉ link tra-cứu có mã sc= (bỏ qua link bare / tracking webhook).
+    matchUrl: (u) => /meinvoice\.vn\/tra-cuu\/?\?.*\bsc=/i.test(u),
+    fetchParse: fetchMeInvoice,
+  },
+  // TODO: VNPT (vninvoice/sinvoice), Viettel (sinvoice.viettel), BKAV (ehoadon), FPT… khi có mẫu.
 ];
 
 export function providerForUrl(url: string): ProviderAdapter | null {

@@ -113,16 +113,21 @@ async function extractFromMessage(
     const adapter = providerForUrl(url);
     if (!adapter) continue;
     try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AVPG-Invoice-Ingest/1.0)' },
-        redirect: 'follow',
-      });
-      if (!res.ok) {
-        console.error(`[invoice-ingest] fetch ${url} → ${res.status}`);
-        continue;
+      let inv: InvoiceData;
+      if (adapter.fetchParse) {
+        // Adapter tự fetch (vd gọi API portal trả XML) — MISA meInvoice.
+        inv = await adapter.fetchParse(url);
+      } else {
+        const res = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AVPG-Invoice-Ingest/1.0)' },
+          redirect: 'follow',
+        });
+        if (!res.ok) {
+          console.error(`[invoice-ingest] fetch ${url} → ${res.status}`);
+          continue;
+        }
+        inv = adapter.parseHtml!(await res.text());
       }
-      const html = await res.text();
-      const inv = adapter.parseHtml(html);
       inv.invoiceUrl = url;
       if (!usable(inv)) {
         console.error(`[invoice-ingest] parse ${adapter.name} ra rỗng (bỏ qua): ${url}`);

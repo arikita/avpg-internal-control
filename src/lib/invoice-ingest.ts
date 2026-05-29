@@ -85,6 +85,11 @@ async function extractFromMessage(
 ): Promise<InvoiceData[]> {
   const result: InvoiceData[] = [];
 
+  // HĐ chỉ hợp lệ khi parse ra được dữ liệu định danh thật — chặn tạo dòng RỖNG khi
+  // parser fail (vd template/provider lạ) thay vì lưu HĐ trắng vào DB.
+  const usable = (inv: InvoiceData): boolean =>
+    !!(inv.invoiceNo || inv.serial || inv.total != null || inv.seller.taxCode);
+
   if (msg.hasAttachments) {
     const atts = await graphListAttachments(env, mailbox, msg.id);
     for (const a of atts) {
@@ -92,7 +97,8 @@ async function extractFromMessage(
       const xml = new TextDecoder('utf-8').decode(a.bytes).replace(/^﻿/, '');
       if (/<HDon\b|<TDiep\b|<DLHDon\b/i.test(xml)) {
         try {
-          result.push(parseTT78Xml(xml));
+          const inv = parseTT78Xml(xml);
+          if (usable(inv)) result.push(inv);
         } catch (e) {
           console.error('[invoice-ingest] parse XML lỗi', a.name, e);
         }
@@ -118,6 +124,10 @@ async function extractFromMessage(
       const html = await res.text();
       const inv = adapter.parseHtml(html);
       inv.invoiceUrl = url;
+      if (!usable(inv)) {
+        console.error(`[invoice-ingest] parse ${adapter.name} ra rỗng (bỏ qua): ${url}`);
+        continue;
+      }
       result.push(inv);
     } catch (e) {
       console.error(`[invoice-ingest] fetch/parse ${url} lỗi`, e);

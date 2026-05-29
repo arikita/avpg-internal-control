@@ -96,6 +96,20 @@ const emptyParty = (): InvoiceParty => ({ taxCode: null, name: null, address: nu
 // compaddress-value, cusname-value, custaxcode-value, cusaddress-value, vatrate, inwords-value...
 // Tổng tiền nằm trong <label> trong <td> sau nhãn (totalamount/vatamount/totalpayment).
 
+// easyinvoice trả phần HTML hóa đơn dưới dạng CHUỖI JS BỊ ESCAPE (<, \", \/) chứ không
+// phải DOM thô → regex class="..." không khớp nếu không giải-escape trước. Bước này biến
+// <span class=\"serial-value\"> → <span class="serial-value"> để selector chạy đúng.
+function unescapeJsHtml(html: string): string {
+  return html
+    .replace(/\\u003c/gi, '<')
+    .replace(/\\u003e/gi, '>')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u0022/gi, '"')
+    .replace(/\\u0027/gi, "'")
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/');
+}
+
 function byClass(html: string, cls: string): string | null {
   const re = new RegExp(`class="${cls}"[^>]*>([\\s\\S]*?)<`, 'i');
   const m = html.match(re);
@@ -110,7 +124,8 @@ function labelAfter(html: string, anchorClass: string): number | null {
   return m ? parseVnNumber(m[1] ?? null) : null;
 }
 
-export function parseEasyInvoiceHtml(html: string): InvoiceData {
+export function parseEasyInvoiceHtml(raw: string): InvoiceData {
+  const html = unescapeJsHtml(raw);
   const seller = emptyParty();
   const buyer = emptyParty();
   seller.name = byClass(html, 'dvbh-value');

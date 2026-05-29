@@ -1058,7 +1058,11 @@ export function proposalDetailPage(
   proposal: Record<string, unknown>,
   items: Array<Record<string, unknown>>,
   approvals: Array<Record<string, unknown>>,
-  procurement?: { head: Record<string, unknown> | null; events: Array<Record<string, unknown>> } | null,
+  procurement?: {
+    head: Record<string, unknown> | null;
+    events: Array<Record<string, unknown>>;
+    attachments: Array<Record<string, unknown>>;
+  } | null,
 ) {
   const isOwner = proposal.proposer_user_id === user.id;
   const userEmailLower = user.email.toLowerCase();
@@ -1091,7 +1095,14 @@ export function proposalDetailPage(
       note: (e.note as string) ?? '',
     })),
   );
+  const procAttachments = procurement?.attachments ?? [];
   const procEditable = isKsnb && procStatus !== 'done';
+  const fmtBytes = (n: unknown): string => {
+    const b = Number(n) || 0;
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
+    return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  };
   const procurementSection: Html =
     isPr && status === 'completed'
       ? html`
@@ -1142,6 +1153,33 @@ export function proposalDetailPage(
                 </div>
               </div>`
             : html`<div class="text-xs text-slate-400">Chỉ KSNB cập nhật được mua sắm.</div>`}
+        ${isKsnb
+          ? html`
+            <div class="border-t border-slate-100 pt-3 mt-3">
+              <div class="text-xs font-medium text-slate-600 mb-2">📎 Hồ sơ đính kèm</div>
+              ${procAttachments.length === 0
+                ? html`<div class="text-sm text-slate-400 mb-2">Chưa có hồ sơ.</div>`
+                : html`<ul class="space-y-1 mb-2">
+                    ${procAttachments.map(
+                      (a) => html`<li class="flex items-center gap-2 text-sm">
+                        <a href="/api/proposals/${String(proposal.id)}/procurement/attachment/${String(a.id)}/download" class="text-blue-700 hover:underline break-all">${a.filename as string}</a>
+                        <span class="text-xs text-slate-400 shrink-0">${fmtBytes(a.size)}</span>
+                        ${procEditable
+                          ? html`<button @click="procDeleteAttachment(${Number(a.id)})" class="text-xs text-rose-600 hover:underline shrink-0">Xoá</button>`
+                          : ''}
+                      </li>`,
+                    )}
+                  </ul>`}
+              ${procEditable
+                ? html`
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <input type="file" x-ref="attachFile" accept=".pdf,.png,.jpg,.jpeg,.xlsx,.docx,.xls,.doc" class="text-sm" />
+                    <button @click="procUploadAttachment()" :disabled="busy" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded text-sm font-medium disabled:opacity-50">Tải lên</button>
+                  </div>
+                  <div class="text-xs text-slate-400 mt-1">PDF, ảnh, Excel/Word — tối đa 10MB/file.</div>`
+                : ''}
+            </div>`
+          : ''}
       </div>`
       : html``;
 
@@ -1523,6 +1561,28 @@ export function proposalDetailPage(
             this.busy = true;
             try {
               const r = await fetch('/api/proposals/' + this.id + '/procurement/event/' + eid, { method: 'DELETE' });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+              window.location.reload();
+            } catch (e) { alert(e.message); this.busy = false; }
+          },
+          async procUploadAttachment() {
+            const input = this.$refs.attachFile;
+            const f = input && input.files && input.files[0];
+            if (!f) { alert('Chọn file trước khi tải lên.'); return; }
+            this.busy = true;
+            try {
+              const fd = new FormData();
+              fd.append('file', f);
+              const r = await fetch('/api/proposals/' + this.id + '/procurement/attachment', { method: 'POST', body: fd });
+              if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
+              window.location.reload();
+            } catch (e) { alert(e.message); this.busy = false; }
+          },
+          async procDeleteAttachment(aid) {
+            if (!confirm('Xoá hồ sơ này?')) return;
+            this.busy = true;
+            try {
+              const r = await fetch('/api/proposals/' + this.id + '/procurement/attachment/' + aid, { method: 'DELETE' });
               if (!r.ok) throw new Error((await r.json()).error || 'Lỗi');
               window.location.reload();
             } catch (e) { alert(e.message); this.busy = false; }

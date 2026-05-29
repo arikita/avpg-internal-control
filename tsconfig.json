@@ -26,6 +26,7 @@
     "src/server.ts",
     "src/lib/node-env.ts",
     "src/lib/pg.ts",
-    "src/lib/migrate-pg.ts"
+    "src/lib/migrate-pg.ts",
+    "src/lib/filestore.ts"
   ]
 }

@@ -11,6 +11,11 @@ services:
     env_file: .env
     environment:
       PORT: "8787"
+      UPLOAD_DIR: /data/uploads
+    # Object layer cho hồ sơ mua hàng (file thật). Named volume → sống sót rebuild.
+    # Backup: docker run --rm -v internal-control_uploads:/d -v "$PWD":/b alpine tar czf /b/uploads.tgz -C /d .
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,3 +48,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:

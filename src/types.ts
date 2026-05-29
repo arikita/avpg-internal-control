@@ -1,8 +1,17 @@
+// Object storage cho file đính kèm. Node inject filesystem-backed (src/lib/filestore.ts);
+// chỉ dùng ở runtime Node. Interface thuần type → không kéo node:fs vào bundle Workers.
+export interface FileStore {
+  put(bytes: Uint8Array): Promise<{ key: string; sha256: string; size: number }>;
+  get(key: string): Promise<Uint8Array | null>;
+  delete(key: string): Promise<void>;
+}
+
 // Cloudflare bindings + env vars. Phải khớp wrangler.toml + .dev.vars.
 export type Bindings = {
   // D1 / KV
   DB: D1Database;
   KV: KVNamespace;
+  FILES: FileStore;
 
   // Vars (public)
   APP_ENV: 'development' | 'production';

@@ -1065,10 +1065,31 @@ async function loadProcurement(env: AppEnv['Bindings'], id: number) {
   )
     .bind(id)
     .all();
-  return { head: head ?? null, events: events.results ?? [] };
+  const attachments = await env.DB.prepare(
+    `SELECT id, filename, mime, size, sha256, uploaded_by_name, created_at
+       FROM procurement_attachment WHERE proposal_id = ?1 ORDER BY id ASC`,
+  )
+    .bind(id)
+    .all();
+  return {
+    head: head ?? null,
+    events: events.results ?? [],
+    attachments: attachments.results ?? [],
+  };
 }
 
 const PROC_TYPES = ['order', 'receive', 'payment', 'other'];
+
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB/file
+const ATTACH_ALLOWED_MIME = new Set([
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/vnd.ms-excel', // .xls
+  'application/msword', // .doc
+]);
 
 // GET trạng thái + nhật ký mua sắm.
 proposalRoutes.get('/:id{[0-9]+}/procurement', async (c) => {
@@ -1199,6 +1220,101 @@ proposalRoutes.post('/:id{[0-9]+}/procurement/done', async (c) => {
     eventType: 'procurement_done', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
     proposalId: id, action: 'done', channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
     detail: JSON.stringify({ note: body.note ?? null }),
+  });
+  return c.json(await loadProcurement(c.env, id));
+});
+
+// Upload hồ sơ mua hàng (multipart `file`). File thật → object layer; metadata → DB.
+proposalRoutes.post('/:id{[0-9]+}/procurement/attachment', async (c) => {
+  const id = Number(c.req.param('id'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB được đính kèm hồ sơ mua hàng');
+  const row = await loadProposal(c, id);
+  if (row.proposal_type !== 'purchase' || row.status !== 'completed') {
+    throw unprocessable('Chỉ phiếu mua hàng đã duyệt mới đính kèm hồ sơ');
+  }
+  const form = await c.req.formData();
+  const file = form.get('file') as File | null;
+  if (!file || typeof file === 'string') throw badRequest('Thiếu file');
+  if (!ATTACH_ALLOWED_MIME.has(file.type)) {
+    throw badRequest(`Loại file không cho phép: ${file.type || 'không rõ'}`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength === 0) throw badRequest('File rỗng');
+  if (bytes.byteLength > ATTACH_MAX_BYTES) {
+    throw badRequest(`File vượt ${ATTACH_MAX_BYTES / 1024 / 1024}MB (hiện ${Math.round(bytes.byteLength / 1024 / 1024)}MB)`);
+  }
+  const filename = (file.name || 'file').slice(0, 255);
+  const stored = await c.env.FILES.put(bytes);
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO procurement_attachment
+         (proposal_id, storage_key, filename, mime, size, sha256, uploaded_by_user_id, uploaded_by_name)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
+    )
+      .bind(id, stored.key, filename, file.type, stored.size, stored.sha256, user.id, user.name)
+      .run();
+  } catch (e) {
+    await c.env.FILES.delete(stored.key); // rollback file nếu ghi metadata lỗi → không orphan
+    throw e;
+  }
+  const actx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'procurement_attachment_add', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+    proposalId: id, action: 'attach', channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+    detail: JSON.stringify({ filename, mime: file.type, size: stored.size, sha256: stored.sha256 }),
+  });
+  return c.json(await loadProcurement(c.env, id));
+});
+
+// Tải hồ sơ — chỉ KSNB (hồ sơ mua hàng nhạy cảm). Stream theo storage_key nội bộ.
+proposalRoutes.get('/:id{[0-9]+}/procurement/attachment/:attId{[0-9]+}/download', async (c) => {
+  const id = Number(c.req.param('id'));
+  const attId = Number(c.req.param('attId'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB xem hồ sơ mua hàng');
+  const att = await c.env.DB.prepare(
+    `SELECT storage_key, filename, mime FROM procurement_attachment WHERE id = ?1 AND proposal_id = ?2`,
+  )
+    .bind(attId, id)
+    .first<{ storage_key: string; filename: string; mime: string }>();
+  if (!att) throw notFound('Không tìm thấy hồ sơ');
+  const bytes = await c.env.FILES.get(att.storage_key);
+  if (!bytes) throw notFound('File không tồn tại trên lưu trữ');
+  const safeName = att.filename.replace(/[\r\n"\\]/g, '_'); // chống header injection
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': att.mime || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${safeName}"`,
+    },
+  });
+});
+
+// Xoá hồ sơ — chỉ KSNB. Xoá row trước rồi unlink file; ghi vết vào audit_events.
+proposalRoutes.delete('/:id{[0-9]+}/procurement/attachment/:attId{[0-9]+}', async (c) => {
+  const id = Number(c.req.param('id'));
+  const attId = Number(c.req.param('attId'));
+  const user = c.get('user');
+  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB được xoá hồ sơ mua hàng');
+  const row = await loadProposal(c, id);
+  if (row.proposal_type !== 'purchase' || row.status !== 'completed') {
+    throw unprocessable('Chỉ phiếu mua hàng đã duyệt mới quản lý hồ sơ');
+  }
+  const att = await c.env.DB.prepare(
+    `SELECT storage_key, filename, mime, size, sha256 FROM procurement_attachment WHERE id = ?1 AND proposal_id = ?2`,
+  )
+    .bind(attId, id)
+    .first<{ storage_key: string; filename: string; mime: string; size: number; sha256: string }>();
+  if (!att) throw notFound('Không tìm thấy hồ sơ');
+  await c.env.DB.prepare(`DELETE FROM procurement_attachment WHERE id = ?1 AND proposal_id = ?2`)
+    .bind(attId, id)
+    .run();
+  await c.env.FILES.delete(att.storage_key);
+  const actx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'procurement_attachment_delete', actorEmail: user.email, actorName: user.name, actorUserId: user.id,
+    proposalId: id, action: 'delete', channel: 'web', ip: actx.ip, userAgent: actx.userAgent, sessionRef: actx.sessionRef,
+    detail: JSON.stringify({ attId, deleted: { filename: att.filename, mime: att.mime, size: att.size, sha256: att.sha256 } }),
   });
   return c.json(await loadProcurement(c.env, id));
 });

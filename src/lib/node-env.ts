@@ -5,6 +5,7 @@
 import type { Pool } from 'pg';
 import type { Bindings } from '../types';
 import { PgDb, PgKv, createPool } from './pg';
+import { createFileStore } from './filestore';
 
 function reqEnv(key: string): string {
   const v = process.env[key];
@@ -26,6 +27,7 @@ export function buildNodeEnv(): Bindings {
   return {
     DB: db,
     KV: kv,
+    FILES: createFileStore(process.env.UPLOAD_DIR ?? '/data/uploads'),
 
     APP_ENV: (process.env.APP_ENV as Bindings['APP_ENV']) ?? 'production',
     APP_BASE_URL: reqEnv('APP_BASE_URL'),

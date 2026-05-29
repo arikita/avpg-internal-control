@@ -1272,7 +1272,18 @@ proposalRoutes.get('/:id{[0-9]+}/procurement/attachment/:attId{[0-9]+}/download'
   const id = Number(c.req.param('id'));
   const attId = Number(c.req.param('attId'));
   const user = c.get('user');
-  if (!isKsnbUser(user.deptCode)) throw forbidden('Chỉ KSNB xem hồ sơ mua hàng');
+  // Người trong luồng (đề nghị + TP + EN + BGĐ + KSNB + admin) được tải hồ sơ.
+  const row = await loadProposal(c, id);
+  const email = user.email.toLowerCase();
+  const canView =
+    row.proposer_user_id === user.id ||
+    row.manager_email?.toLowerCase() === email ||
+    row.engineering_email?.toLowerCase() === email ||
+    row.bod_email?.toLowerCase() === email ||
+    row.ic_email?.toLowerCase() === email ||
+    isKsnbUser(user.deptCode) ||
+    !!user.isAdmin;
+  if (!canView) throw forbidden('Không có quyền xem hồ sơ phiếu này');
   const att = await c.env.DB.prepare(
     `SELECT storage_key, filename, mime FROM procurement_attachment WHERE id = ?1 AND proposal_id = ?2`,
   )

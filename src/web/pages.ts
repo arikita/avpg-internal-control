@@ -1097,6 +1097,10 @@ export function proposalDetailPage(
   );
   const procAttachments = procurement?.attachments ?? [];
   const procEditable = isKsnb && procStatus !== 'done';
+  // Hồ sơ: người trong luồng (đề nghị + TP + EN + BGĐ + KSNB + admin) được xem/tải;
+  // chỉ KSNB upload/xoá (qua procEditable).
+  const canSeeAttachments =
+    isOwner || !!isManagerOf || !!isEnOf || !!isBodOf || isKsnb || !!user.isAdmin;
   const fmtBytes = (n: unknown): string => {
     const b = Number(n) || 0;
     if (b < 1024) return `${b} B`;
@@ -1153,7 +1157,7 @@ export function proposalDetailPage(
                 </div>
               </div>`
             : html`<div class="text-xs text-slate-400">Chỉ KSNB cập nhật được mua sắm.</div>`}
-        ${isKsnb
+        ${canSeeAttachments && (procAttachments.length > 0 || isKsnb)
           ? html`
             <div class="border-t border-slate-100 pt-3 mt-3">
               <div class="text-xs font-medium text-slate-600 mb-2">📎 Hồ sơ đính kèm</div>

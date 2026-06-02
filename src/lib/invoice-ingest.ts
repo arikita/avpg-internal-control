@@ -151,6 +151,7 @@ async function persistInvoice(
 ): Promise<number | null> {
   const branch = await resolveBranch(env, inv.buyer.taxCode);
   const supplierShort = await resolveSupplierShort(env, inv.seller.taxCode, inv.seller.name);
+  const creditTerm = await resolveCreditTerm(env, inv.seller.taxCode);
 
   const row = await env.DB.prepare(
     `INSERT INTO supplier_invoice (
@@ -159,14 +160,14 @@ async function persistInvoice(
         seller_tax_code, seller_name, seller_address,
         buyer_tax_code, buyer_name, buyer_address,
         currency, exchange_rate, subtotal, vat_rate, vat_amount, total, amount_words,
-        branch, supplier_short, status
+        branch, supplier_short, credit_term_days, status
      ) VALUES (
         'email', ?1, ?2, ?3,
         ?4, ?5, ?6, ?7, ?8,
         ?9, ?10, ?11,
         ?12, ?13, ?14,
         ?15, ?16, ?17, ?18, ?19, ?20, ?21,
-        ?22, ?23, 'pending'
+        ?22, ?23, ?24, 'pending'
      )
      ON CONFLICT (seller_tax_code, serial, invoice_no) DO NOTHING
      RETURNING id`,
@@ -195,6 +196,7 @@ async function persistInvoice(
       inv.amountWords,
       branch,
       supplierShort,
+      creditTerm,
     )
     .first<{ id: number }>();
 
@@ -239,6 +241,15 @@ async function resolveSupplierShort(
     .bind(sellerTaxCode, sellerName, short)
     .run();
   return short;
+}
+
+// MST bên bán → số ngày được nợ mặc định (đã set ở 1 HĐ trước). null nếu chưa có.
+async function resolveCreditTerm(env: Bindings, sellerTaxCode: string | null): Promise<number | null> {
+  if (!sellerTaxCode) return null;
+  const r = await env.DB.prepare(`SELECT default_credit_term FROM supplier_alias WHERE seller_tax_code = ?1`)
+    .bind(sellerTaxCode)
+    .first<{ default_credit_term: number | null }>();
+  return r?.default_credit_term ?? null;
 }
 
 async function markSeen(

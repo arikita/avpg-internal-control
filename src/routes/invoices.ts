@@ -8,7 +8,7 @@ import type { AppEnv } from '../types';
 import { page } from '../web/layout';
 import { requireAdmin } from '../middleware/auth';
 import { badRequest, notFound } from '../lib/errors';
-import { nowIso, vnDisplay } from '../lib/time';
+import { nowIso, vnDisplay, daysSinceDate } from '../lib/time';
 import { runInvoiceIngest } from '../lib/invoice-ingest';
 
 export const invoiceRoutes = new Hono<AppEnv>();
@@ -45,6 +45,7 @@ type InvoiceRow = {
   total: number | null;
   payment_status: string;
   paid_amount: number | null;
+  credit_term_days: number | null;
   proposal_code: string | null;
   doc_submit_date: string | null;
   receive_date: string | null;
@@ -59,13 +60,38 @@ type InvoiceRow = {
   created_at: string;
 };
 
+// Cột "TT THANH TOÁN" của sổ Excel: Đang thanh toán / Đã tạm ứng / Đã thanh toán.
 function payBadge(status: string) {
   const map: Record<string, { label: string; cls: string }> = {
-    unpaid: { label: 'Chưa TT', cls: 'bg-rose-100 text-rose-700' },
-    partial: { label: 'TT một phần', cls: 'bg-amber-100 text-amber-800' },
-    paid: { label: 'Đã TT', cls: 'bg-emerald-100 text-emerald-700' },
+    unpaid: { label: 'Đang thanh toán', cls: 'bg-rose-100 text-rose-700' },
+    partial: { label: 'Đã tạm ứng', cls: 'bg-amber-100 text-amber-800' },
+    paid: { label: 'Đã thanh toán', cls: 'bg-emerald-100 text-emerald-700' },
   };
   const m = map[status] ?? { label: status, cls: 'bg-slate-100 text-slate-600' };
+  return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${m.cls}">${m.label}</span>`;
+}
+
+// Cột "TÌNH TRẠNG" (L) + "NGÀY QUÁ HẠN" (M) — tính từ ngày HĐ + số ngày được nợ.
+//   hạn = ngày HĐ + credit_term_days; quá hạn khi (hôm nay − ngày HĐ) > số ngày nợ.
+// Trả về { kind, overdueDays } để render badge + số ngày.
+function dueStatus(r: { payment_status: string; invoice_date: string | null; credit_term_days: number | null }) {
+  if (r.payment_status === 'paid') return { kind: 'paid' as const, overdueDays: null };
+  const since = daysSinceDate(r.invoice_date);
+  if (since == null || r.credit_term_days == null) return { kind: 'unknown' as const, overdueDays: null };
+  const overdue = since - r.credit_term_days; // > 0 = đã quá hạn bấy nhiêu ngày
+  return overdue > 0
+    ? { kind: 'overdue' as const, overdueDays: overdue }
+    : { kind: 'in_term' as const, overdueDays: overdue };
+}
+
+function dueBadge(d: ReturnType<typeof dueStatus>) {
+  const map = {
+    paid: { label: 'Đã thanh toán', cls: 'bg-emerald-100 text-emerald-700' },
+    overdue: { label: 'Quá hạn', cls: 'bg-rose-100 text-rose-700' },
+    in_term: { label: 'Trong hạn', cls: 'bg-blue-100 text-blue-800' },
+    unknown: { label: '—', cls: 'bg-slate-100 text-slate-500' },
+  } as const;
+  const m = map[d.kind];
   return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${m.cls}">${m.label}</span>`;
 }
 
@@ -102,17 +128,29 @@ invoiceRoutes.get('/', async (c) => {
     params.push(`%${q.toLowerCase()}%`);
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
-  params.push(200);
+  // Toàn bộ HĐ khớp lọc (không LIMIT) — để dựng bảng + tính KPI công nợ giống sheet.
   const rows =
     (
       await c.env.DB.prepare(
         `SELECT id, status, serial, invoice_no, invoice_date, seller_name, supplier_short, branch,
-                subtotal, vat_amount, total, payment_status, paid_amount, proposal_code
-           FROM supplier_invoice ${where} ORDER BY id DESC LIMIT ?${++n}`,
+                subtotal, vat_amount, total, payment_status, paid_amount, credit_term_days, proposal_code
+           FROM supplier_invoice ${where} ORDER BY supplier_short, seller_name, invoice_date`,
       )
         .bind(...params)
         .all<InvoiceRow>()
     ).results ?? [];
+
+  // KPI header (sổ Excel: TỔNG công nợ chưa trả + QUÁ HẠN). Tính trên tập đang lọc,
+  // loại HĐ đã bỏ qua (rejected) khỏi tổng nợ.
+  let totalOutstanding = 0;
+  let totalOverdue = 0;
+  for (const r of rows) {
+    if (r.status === 'rejected') continue;
+    const outstanding = Number(r.total ?? 0) - Number(r.paid_amount ?? 0);
+    if (outstanding <= 0) continue;
+    totalOutstanding += outstanding;
+    if (dueStatus(r).kind === 'overdue') totalOverdue += outstanding;
+  }
 
   const branches =
     (await c.env.DB.prepare(`SELECT name FROM branch WHERE active = 1 ORDER BY sort_order`).all<{ name: string }>())
@@ -121,19 +159,43 @@ invoiceRoutes.get('/', async (c) => {
     (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM supplier_invoice WHERE status = 'pending'`).first<{ n: number }>())
       ?.n ?? 0;
 
-  return c.html(page({ title: 'Hóa đơn NCC', user, body: listBody(rows, { status, branch, q, branches, pendingCount }) }));
+  return c.html(
+    page({
+      title: 'Hóa đơn NCC',
+      user,
+      body: listBody(rows, { status, branch, q, branches, pendingCount, totalOutstanding, totalOverdue }),
+    }),
+  );
 });
 
 function listBody(
   rows: InvoiceRow[],
-  f: { status: string; branch: string; q: string; branches: { name: string }[]; pendingCount: number },
+  f: {
+    status: string;
+    branch: string;
+    q: string;
+    branches: { name: string }[];
+    pendingCount: number;
+    totalOutstanding: number;
+    totalOverdue: number;
+  },
 ) {
   const tab = (key: string, label: string) =>
     html`<a href="/invoices?status=${key}"
       class="px-3 py-1.5 rounded-md text-sm ${f.status === key ? 'bg-blue-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}">${label}</a>`;
+  const kpi = (label: string, value: string, cls: string) =>
+    html`<div class="bg-white rounded-lg ring-1 ring-slate-200 px-4 py-3">
+      <div class="text-xs text-slate-400 uppercase tracking-wide">${label}</div>
+      <div class="text-xl font-bold ${cls}">${value}</div>
+    </div>`;
   return html`
     <div class="flex items-center justify-between mb-4">
-      <h1 class="text-xl font-semibold text-slate-800">🧾 Hóa đơn NCC ${f.pendingCount > 0 ? html`<span class="ml-2 align-middle text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">${String(f.pendingCount)} chờ xác nhận</span>` : ''}</h1>
+      <h1 class="text-xl font-semibold text-slate-800">🧾 Hóa đơn NCC — Theo dõi công nợ ${f.pendingCount > 0 ? html`<span class="ml-2 align-middle text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">${String(f.pendingCount)} chờ xác nhận</span>` : ''}</h1>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+      ${kpi('Tổng công nợ', money(f.totalOutstanding), 'text-blue-900')}
+      ${kpi('Quá hạn', money(f.totalOverdue), 'text-rose-600')}
+      ${kpi('Ngày cập nhật', vnDisplay(nowIso()).slice(0, 10), 'text-slate-700')}
     </div>
     <div class="flex flex-wrap gap-2 mb-3">
       ${tab('all', 'Tất cả')} ${tab('pending', 'Chờ xác nhận')} ${tab('confirmed', 'Đã xác nhận')} ${tab('rejected', 'Bỏ qua')}
@@ -154,36 +216,49 @@ function listBody(
     ${rows.length === 0
       ? html`<div class="text-center text-slate-400 bg-white rounded-lg ring-1 ring-slate-200 py-12">Chưa có hóa đơn.</div>`
       : html`<div class="overflow-x-auto bg-white rounded-lg ring-1 ring-slate-200">
-        <table class="w-full text-sm">
+        <table class="w-full text-sm whitespace-nowrap">
           <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
             <tr>
-              <th class="text-left px-3 py-2">Ngày HĐ</th>
-              <th class="text-left px-3 py-2">Ký hiệu / Số</th>
-              <th class="text-left px-3 py-2">NCC</th>
-              <th class="text-left px-3 py-2">Nhà máy</th>
-              <th class="text-right px-3 py-2">Tổng TT</th>
-              <th class="text-center px-3 py-2">Thanh toán</th>
-              <th class="text-center px-3 py-2">Trạng thái</th>
+              <th class="text-right px-2 py-2">STT</th>
+              <th class="text-center px-2 py-2">TT thanh toán</th>
+              <th class="text-left px-2 py-2">Nhà máy</th>
+              <th class="text-left px-2 py-2">Nhà cung cấp</th>
+              <th class="text-left px-2 py-2">Số HĐ</th>
+              <th class="text-left px-2 py-2">Ngày HĐ</th>
+              <th class="text-right px-2 py-2">Thành tiền</th>
+              <th class="text-right px-2 py-2">Đã TT</th>
+              <th class="text-right px-2 py-2">Chưa TT</th>
+              <th class="text-center px-2 py-2">Công nợ (ngày)</th>
+              <th class="text-center px-2 py-2">Tình trạng</th>
+              <th class="text-right px-2 py-2">Quá hạn (ngày)</th>
             </tr>
           </thead>
           <tbody>
-            ${rows.map(
-              (r) => html`<tr class="border-t border-slate-100 hover:bg-blue-50/40">
-              <td class="px-3 py-2 whitespace-nowrap">
-                <a href="/invoices/${String(r.id)}" class="text-blue-700 hover:underline">${esc(r.invoice_date)}</a>
+            ${rows.map((r, i) => {
+              const outstanding = Number(r.total ?? 0) - Number(r.paid_amount ?? 0);
+              const d = dueStatus(r);
+              return html`<tr class="border-t border-slate-100 hover:bg-blue-50/40 ${r.status === 'rejected' ? 'opacity-50' : ''}">
+              <td class="px-2 py-2 text-right text-slate-400">${String(i + 1)}</td>
+              <td class="px-2 py-2 text-center">${payBadge(r.payment_status)}</td>
+              <td class="px-2 py-2">${r.branch ? esc(r.branch) : html`<span class="text-rose-500 text-xs">chưa gán</span>`}</td>
+              <td class="px-2 py-2">${esc(r.supplier_short ?? r.seller_name)}</td>
+              <td class="px-2 py-2 text-slate-600">
+                <a href="/invoices/${String(r.id)}" class="text-blue-700 hover:underline"><b>${esc(r.invoice_no)}</b></a>
+                ${r.status === 'pending' ? html` <span class="text-amber-600 text-xs">●</span>` : ''}
               </td>
-              <td class="px-3 py-2 whitespace-nowrap text-slate-600">${esc(r.serial)} · <b>${esc(r.invoice_no)}</b></td>
-              <td class="px-3 py-2">${esc(r.supplier_short ?? r.seller_name)}</td>
-              <td class="px-3 py-2">${r.branch ? esc(r.branch) : html`<span class="text-rose-500 text-xs">chưa gán</span>`}</td>
-              <td class="px-3 py-2 text-right font-medium whitespace-nowrap">${money(r.total)}</td>
-              <td class="px-3 py-2 text-center">${payBadge(r.payment_status)}</td>
-              <td class="px-3 py-2 text-center">${recBadge(r.status)}</td>
-            </tr>`,
-            )}
+              <td class="px-2 py-2">${esc(r.invoice_date)}</td>
+              <td class="px-2 py-2 text-right font-medium">${money(r.total)}</td>
+              <td class="px-2 py-2 text-right text-emerald-700">${r.paid_amount ? money(r.paid_amount) : ''}</td>
+              <td class="px-2 py-2 text-right ${outstanding > 0 ? 'text-rose-600 font-medium' : 'text-slate-300'}">${outstanding > 0 ? money(outstanding) : '0'}</td>
+              <td class="px-2 py-2 text-center text-slate-600">${r.credit_term_days == null ? '—' : String(r.credit_term_days)}</td>
+              <td class="px-2 py-2 text-center">${dueBadge(d)}</td>
+              <td class="px-2 py-2 text-right ${d.kind === 'overdue' ? 'text-rose-600 font-medium' : 'text-slate-400'}">${d.overdueDays != null && d.overdueDays > 0 ? String(d.overdueDays) : ''}</td>
+            </tr>`;
+            })}
           </tbody>
         </table>
       </div>`}
-    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · tự động đọc từ mail HĐĐT về hộp thư chung.</p>`;
+    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · ● = chờ xác nhận · tự động đọc từ mail HĐĐT về hộp thư chung.</p>`;
 }
 
 // ===== Chi tiết + xác nhận =====
@@ -295,15 +370,29 @@ function detailBody(
 
     <!-- Theo dõi thanh toán -->
     <form method="post" action="/invoices/${String(inv.id)}/payment" class="bg-white rounded-lg ring-1 ring-slate-200 p-5 mb-4">
-      <div class="font-medium text-slate-700 mb-3">Công nợ / thanh toán</div>
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+      <div class="flex items-center justify-between mb-3">
+        <div class="font-medium text-slate-700">Công nợ / thanh toán</div>
+        ${(() => {
+          const d = dueStatus(inv);
+          const outstanding = Number(inv.total ?? 0) - Number(inv.paid_amount ?? 0);
+          return html`<div class="flex items-center gap-3 text-sm">
+            ${dueBadge(d)}
+            ${d.kind === 'overdue' ? html`<span class="text-rose-600">quá hạn ${String(d.overdueDays)} ngày</span>` : ''}
+            <span class="text-slate-500">Còn nợ <b class="${outstanding > 0 ? 'text-rose-600' : 'text-slate-700'}">${money(outstanding)}</b></span>
+          </div>`;
+        })()}
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-4 text-sm">
         <label class="flex flex-col gap-1">Trạng thái
           <select name="payment_status" class="px-2 py-1.5 border border-slate-300 rounded-md">
-            ${['unpaid', 'partial', 'paid'].map((s) => html`<option value="${s}" ${inv.payment_status === s ? 'selected' : ''}>${s === 'unpaid' ? 'Chưa TT' : s === 'partial' ? 'TT một phần' : 'Đã TT'}</option>`)}
+            ${['unpaid', 'partial', 'paid'].map((s) => html`<option value="${s}" ${inv.payment_status === s ? 'selected' : ''}>${s === 'unpaid' ? 'Đang thanh toán' : s === 'partial' ? 'Đã tạm ứng' : 'Đã thanh toán'}</option>`)}
           </select>
         </label>
         <label class="flex flex-col gap-1">Đã thanh toán
           <input type="number" name="paid_amount" value="${esc(inv.paid_amount)}" step="any" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+        </label>
+        <label class="flex flex-col gap-1">Công nợ (số ngày)
+          <input type="number" name="credit_term_days" value="${esc(inv.credit_term_days)}" min="0" step="1" placeholder="vd 30" class="px-2 py-1.5 border border-slate-300 rounded-md" />
         </label>
         <label class="flex flex-col gap-1">Ngày nộp chứng từ
           <input type="date" name="doc_submit_date" value="${esc(inv.doc_submit_date)}" class="px-2 py-1.5 border border-slate-300 rounded-md" />
@@ -374,20 +463,38 @@ invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
   const b = await c.req.parseBody();
   const paymentStatus = String(b.payment_status ?? 'unpaid');
   const paidAmount = b.paid_amount ? Number(b.paid_amount) : 0;
+  const creditTermRaw = String(b.credit_term_days ?? '').trim();
+  const creditTerm = creditTermRaw === '' ? null : Math.max(0, Math.round(Number(creditTermRaw)));
   await c.env.DB.prepare(
     `UPDATE supplier_invoice
-        SET payment_status = ?2, paid_amount = ?3, doc_submit_date = ?4, receive_date = ?5, note = ?6, updated_at = iso_now()
+        SET payment_status = ?2, paid_amount = ?3, credit_term_days = ?4,
+            doc_submit_date = ?5, receive_date = ?6, note = ?7, updated_at = iso_now()
       WHERE id = ?1`,
   )
     .bind(
       id,
       paymentStatus,
       paidAmount,
+      creditTerm,
       String(b.doc_submit_date ?? '') || null,
       String(b.receive_date ?? '') || null,
       String(b.note ?? '') || null,
     )
     .run();
+
+  // Ghi nhớ số ngày được nợ làm mặc định cho NCC (auto-fill HĐ sau).
+  if (creditTerm != null) {
+    const inv = await c.env.DB.prepare(`SELECT seller_tax_code FROM supplier_invoice WHERE id = ?1`)
+      .bind(id)
+      .first<{ seller_tax_code: string | null }>();
+    if (inv?.seller_tax_code) {
+      await c.env.DB.prepare(
+        `UPDATE supplier_alias SET default_credit_term = ?2, updated_at = iso_now() WHERE seller_tax_code = ?1`,
+      )
+        .bind(inv.seller_tax_code, creditTerm)
+        .run();
+    }
+  }
   return c.redirect(`/invoices/${id}`);
 });
 

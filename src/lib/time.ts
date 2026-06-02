@@ -15,6 +15,18 @@ export function vnDateKey(d: Date = new Date()): string {
   return `${dd}${mm}${yyyy}`;
 }
 
+// Số ngày tính đến HÔM NAY (giờ VN) kể từ một ngày 'YYYY-MM-DD'.
+// Dương = đã qua bao nhiêu ngày; dùng cho "ngày xuất HĐ" và tính quá hạn công nợ.
+export function daysSinceDate(dateStr: string | null | undefined): number | null {
+  if (!dateStr) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+  if (!m) return null;
+  const issued = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const vn = new Date(Date.now() + VN_OFFSET_MS);
+  const today = Date.UTC(vn.getUTCFullYear(), vn.getUTCMonth(), vn.getUTCDate());
+  return Math.round((today - issued) / 86_400_000);
+}
+
 // 'DD/MM/YYYY HH:mm' theo giờ VN — render cho email/UI.
 export function vnDisplay(iso: string | null | undefined): string {
   if (!iso) return '';

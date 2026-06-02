@@ -123,19 +123,16 @@ function recBadge(status: string) {
 }
 
 // ===== Danh sách =====
+// Workflow xác nhận tạm bỏ — mọi HĐ (trừ rejected cũ) hiển thị & sửa trực tiếp ngay
+// trên dòng (Đã TT + Công nợ ngày). Nhấn số HĐ → mở hóa đơn gốc (invoice_url).
 invoiceRoutes.get('/', async (c) => {
   const user = c.get('user')!;
-  const status = c.req.query('status') ?? 'all';
   const branch = c.req.query('branch') ?? '';
   const q = (c.req.query('q') ?? '').trim();
 
-  const conds: string[] = [];
+  const conds: string[] = [`status <> 'rejected'`];
   const params: unknown[] = [];
   let n = 0;
-  if (status !== 'all') {
-    conds.push(`status = ?${++n}`);
-    params.push(status);
-  }
   if (branch) {
     conds.push(`branch = ?${++n}`);
     params.push(branch);
@@ -144,12 +141,12 @@ invoiceRoutes.get('/', async (c) => {
     conds.push(`(LOWER(invoice_no) LIKE ?${++n} OR LOWER(seller_name) LIKE ?${n} OR LOWER(supplier_short) LIKE ?${n})`);
     params.push(`%${q.toLowerCase()}%`);
   }
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const where = `WHERE ${conds.join(' AND ')}`;
   // Toàn bộ HĐ khớp lọc (không LIMIT) — để dựng bảng + tính KPI công nợ giống sheet.
   const rows =
     (
       await c.env.DB.prepare(
-        `SELECT id, status, serial, invoice_no, invoice_date, seller_name, supplier_short, branch,
+        `SELECT id, status, serial, invoice_no, invoice_date, invoice_url, seller_name, supplier_short, branch,
                 subtotal, vat_amount, total, payment_status, paid_amount, credit_term_days, proposal_code
            FROM supplier_invoice ${where} ORDER BY supplier_short, seller_name, invoice_date`,
       )
@@ -157,12 +154,10 @@ invoiceRoutes.get('/', async (c) => {
         .all<InvoiceRow>()
     ).results ?? [];
 
-  // KPI header (sổ Excel: TỔNG công nợ chưa trả + QUÁ HẠN). Tính trên tập đang lọc,
-  // loại HĐ đã bỏ qua (rejected) khỏi tổng nợ.
+  // KPI header (sổ Excel: TỔNG công nợ chưa trả + QUÁ HẠN). Tính trên tập đang lọc.
   let totalOutstanding = 0;
   let totalOverdue = 0;
   for (const r of rows) {
-    if (r.status === 'rejected') continue;
     const outstanding = Number(r.total ?? 0) - Number(r.paid_amount ?? 0);
     if (outstanding <= 0) continue;
     totalOutstanding += outstanding;
@@ -172,16 +167,13 @@ invoiceRoutes.get('/', async (c) => {
   const branches =
     (await c.env.DB.prepare(`SELECT name FROM branch WHERE active = 1 ORDER BY sort_order`).all<{ name: string }>())
       .results ?? [];
-  const pendingCount =
-    (await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM supplier_invoice WHERE status = 'pending'`).first<{ n: number }>())
-      ?.n ?? 0;
 
   return c.html(
     page({
       title: 'Hóa đơn NCC',
       user,
       wide: true,
-      body: listBody(rows, { status, branch, q, branches, pendingCount, totalOutstanding, totalOverdue }),
+      body: listBody(rows, { branch, q, branches, totalOutstanding, totalOverdue }),
     }),
   );
 });
@@ -189,18 +181,13 @@ invoiceRoutes.get('/', async (c) => {
 function listBody(
   rows: InvoiceRow[],
   f: {
-    status: string;
     branch: string;
     q: string;
     branches: { name: string }[];
-    pendingCount: number;
     totalOutstanding: number;
     totalOverdue: number;
   },
 ) {
-  const tab = (key: string, label: string) =>
-    html`<a href="/invoices?status=${key}"
-      class="px-3 py-1.5 rounded-md text-sm ${f.status === key ? 'bg-blue-900 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}">${label}</a>`;
   const kpi = (label: string, value: string, cls: string) =>
     html`<div class="bg-white rounded-lg ring-1 ring-slate-200 px-4 py-3">
       <div class="text-xs text-slate-400 uppercase tracking-wide">${label}</div>
@@ -208,18 +195,14 @@ function listBody(
     </div>`;
   return html`
     <div class="flex items-center justify-between mb-4">
-      <h1 class="text-xl font-semibold text-slate-800">🧾 Hóa đơn NCC — Theo dõi công nợ ${f.pendingCount > 0 ? html`<span class="ml-2 align-middle text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">${String(f.pendingCount)} chờ xác nhận</span>` : ''}</h1>
+      <h1 class="text-xl font-semibold text-slate-800">🧾 Hóa đơn NCC — Theo dõi công nợ</h1>
     </div>
     <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
       ${kpi('Tổng công nợ', money(f.totalOutstanding), 'text-blue-900')}
       ${kpi('Quá hạn', money(f.totalOverdue), 'text-rose-600')}
       ${kpi('Ngày cập nhật', vnDisplay(nowIso()).slice(0, 10), 'text-slate-700')}
     </div>
-    <div class="flex flex-wrap gap-2 mb-3">
-      ${tab('all', 'Tất cả')} ${tab('pending', 'Chờ xác nhận')} ${tab('confirmed', 'Đã xác nhận')} ${tab('rejected', 'Bỏ qua')}
-    </div>
     <form method="get" action="/invoices" class="flex flex-wrap gap-2 mb-4 items-end">
-      <input type="hidden" name="status" value="${f.status}" />
       <label class="flex flex-col text-xs text-slate-500 gap-1">Nhà máy
         <select name="branch" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm">
           <option value="">— Tất cả —</option>
@@ -249,56 +232,54 @@ function listBody(
               <th class="text-center px-2 py-2">Công nợ (ngày)</th>
               <th class="text-center px-2 py-2">Tình trạng</th>
               <th class="text-right px-2 py-2">Quá hạn (ngày)</th>
+              <th class="text-center px-2 py-2"></th>
             </tr>
           </thead>
           <tbody>
             ${rows.map((r, i) => {
               const outstanding = Number(r.total ?? 0) - Number(r.paid_amount ?? 0);
               const d = dueStatus(r);
-              return html`<tr class="border-t border-slate-100 hover:bg-blue-50/40 ${r.status === 'rejected' ? 'opacity-50' : ''}">
+              const fid = `pay-${String(r.id)}`;
+              return html`<tr class="border-t border-slate-100 hover:bg-blue-50/40">
               <td class="px-2 py-2 text-right text-slate-400">${String(i + 1)}</td>
               <td class="px-2 py-2 text-center">${payBadge(derivePayStatus(r.total, r.paid_amount))}</td>
               <td class="px-2 py-2">${r.branch ? esc(r.branch) : html`<span class="text-rose-500 text-xs">chưa gán</span>`}</td>
               <td class="px-2 py-2">${esc(r.supplier_short ?? r.seller_name)}</td>
               <td class="px-2 py-2 text-slate-600">
-                <a href="/invoices/${String(r.id)}" class="text-blue-700 hover:underline"><b>${esc(r.invoice_no)}</b></a>
-                ${r.status === 'pending' ? html` <span class="text-amber-600 text-xs">●</span>` : ''}
+                ${r.invoice_url
+                  ? html`<a href="${r.invoice_url}" target="_blank" rel="noopener" class="text-blue-700 hover:underline" title="Mở hóa đơn gốc"><b>${esc(r.invoice_no)}</b> ↗</a>`
+                  : html`<b class="text-slate-500" title="Không có hóa đơn gốc">${esc(r.invoice_no)}</b>`}
               </td>
               <td class="px-2 py-2">${esc(r.invoice_date)}</td>
               <td class="px-2 py-2 text-right font-medium">${money(r.total)}</td>
-              <td class="px-2 py-2 text-right text-emerald-700">${r.paid_amount ? money(r.paid_amount) : ''}</td>
+              <td class="px-2 py-2 text-right">
+                <input type="number" name="paid_amount" form="${fid}" value="${esc(r.paid_amount)}" step="any" min="0"
+                  class="w-28 px-1.5 py-1 text-right border border-slate-200 rounded focus:border-blue-400 focus:ring-1 focus:ring-blue-200" />
+              </td>
               <td class="px-2 py-2 text-right ${outstanding > 0 ? 'text-rose-600 font-medium' : 'text-slate-300'}">${outstanding > 0 ? money(outstanding) : '0'}</td>
-              <td class="px-2 py-2 text-center text-slate-600">${r.credit_term_days == null ? '—' : String(r.credit_term_days)}</td>
+              <td class="px-2 py-2 text-center">
+                <input type="number" name="credit_term_days" form="${fid}" value="${esc(r.credit_term_days)}" min="0" step="1" placeholder="—"
+                  class="w-16 px-1.5 py-1 text-center border border-slate-200 rounded focus:border-blue-400 focus:ring-1 focus:ring-blue-200" />
+              </td>
               <td class="px-2 py-2 text-center">${dueBadge(d)}</td>
               <td class="px-2 py-2 text-right ${d.kind === 'overdue' ? 'text-rose-600 font-medium' : 'text-slate-400'}">${d.overdueDays != null && d.overdueDays > 0 ? String(d.overdueDays) : ''}</td>
+              <td class="px-2 py-2 text-center">
+                <form id="${fid}" method="post" action="/invoices/${String(r.id)}/payment">
+                  <button class="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded text-xs">Lưu</button>
+                </form>
+              </td>
             </tr>`;
             })}
           </tbody>
         </table>
       </div>`}
-    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · ● = chờ xác nhận · tự động đọc từ mail HĐĐT về hộp thư chung.</p>`;
+    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · nhập <b>Đã TT</b> + <b>Công nợ (ngày)</b> rồi bấm <b>Lưu</b> ngay trên dòng · nhấn số HĐ để mở hóa đơn gốc.</p>`;
 }
 
-// ===== Chi tiết + xác nhận =====
-invoiceRoutes.get('/:id{[0-9]+}', async (c) => {
-  const user = c.get('user')!;
-  const id = Number(c.req.param('id'));
-  const inv = await c.env.DB.prepare(`SELECT * FROM supplier_invoice WHERE id = ?1`).bind(id).first<InvoiceRow>();
-  if (!inv) throw notFound('Hóa đơn không tồn tại');
-  const lines =
-    (
-      await c.env.DB.prepare(
-        `SELECT seq, item_name, unit, qty, unit_price, vat_rate, amount
-           FROM supplier_invoice_line WHERE invoice_id = ?1 ORDER BY seq`,
-      )
-        .bind(id)
-        .all<{ seq: number; item_name: string; unit: string; qty: number; unit_price: number; vat_rate: number; amount: number }>()
-    ).results ?? [];
-  const branches =
-    (await c.env.DB.prepare(`SELECT name FROM branch WHERE active = 1 ORDER BY sort_order`).all<{ name: string }>())
-      .results ?? [];
-  return c.html(page({ title: `HĐ ${esc(inv.invoice_no)}`, user, body: detailBody(inv, lines, branches) }));
-});
+// ===== Chi tiết — TẠM ĐÓNG =====
+// Yêu cầu: thao tác trực tiếp ở /invoices; nhấn HĐ mở hóa đơn gốc (invoice_url).
+// Giữ detailBody()/confirm/reject bên dưới để bật lại sau, chỉ chặn truy cập trang này.
+invoiceRoutes.get('/:id{[0-9]+}', (c) => c.redirect('/invoices'));
 
 function detailBody(
   inv: InvoiceRow,
@@ -486,21 +467,14 @@ invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
     .first<{ total: number | null; seller_tax_code: string | null }>();
   const paymentStatus = derivePayStatus(inv?.total, paidAmount);
 
+  // Sửa trực tiếp trên dòng /invoices — chỉ cập nhật Đã TT + Công nợ (ngày) + TT thanh
+  // toán suy ra. Không đụng doc_submit_date/receive_date/note (giữ nguyên giá trị cũ).
   await c.env.DB.prepare(
     `UPDATE supplier_invoice
-        SET payment_status = ?2, paid_amount = ?3, credit_term_days = ?4,
-            doc_submit_date = ?5, receive_date = ?6, note = ?7, updated_at = iso_now()
+        SET payment_status = ?2, paid_amount = ?3, credit_term_days = ?4, updated_at = iso_now()
       WHERE id = ?1`,
   )
-    .bind(
-      id,
-      paymentStatus,
-      paidAmount,
-      creditTerm,
-      String(b.doc_submit_date ?? '') || null,
-      String(b.receive_date ?? '') || null,
-      String(b.note ?? '') || null,
-    )
+    .bind(id, paymentStatus, paidAmount, creditTerm)
     .run();
 
   // Ghi nhớ số ngày được nợ làm mặc định cho NCC (auto-fill HĐ sau).
@@ -511,7 +485,8 @@ invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
       .bind(inv.seller_tax_code, creditTerm)
       .run();
   }
-  return c.redirect(`/invoices/${id}`);
+  // Quay lại danh sách (giữ bộ lọc nếu có qua Referer).
+  return c.redirect(c.req.header('referer') ?? '/invoices');
 });
 
 invoiceRoutes.post('/:id{[0-9]+}/reject', async (c) => {

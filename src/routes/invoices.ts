@@ -10,6 +10,7 @@ import { requireAdmin } from '../middleware/auth';
 import { badRequest, notFound } from '../lib/errors';
 import { nowIso, vnDisplay, daysSinceDate } from '../lib/time';
 import { runInvoiceIngest } from '../lib/invoice-ingest';
+import { graphListAttachments } from '../lib/graph';
 
 export const invoiceRoutes = new Hono<AppEnv>();
 
@@ -55,6 +56,9 @@ type InvoiceRow = {
   buyer_address: string | null;
   tax_auth_code: string | null;
   lookup_code: string | null;
+  source_doc_key: string | null;
+  source_doc_name: string | null;
+  source_doc_mime: string | null;
   confirmed_by_name: string | null;
   confirmed_at: string | null;
   created_at: string;
@@ -146,7 +150,7 @@ invoiceRoutes.get('/', async (c) => {
   const rows =
     (
       await c.env.DB.prepare(
-        `SELECT id, status, serial, invoice_no, invoice_date, invoice_url, seller_name, supplier_short, branch,
+        `SELECT id, status, serial, invoice_no, invoice_date, invoice_url, source_doc_key, seller_name, supplier_short, branch,
                 subtotal, vat_amount, total, payment_status, paid_amount, credit_term_days, proposal_code
            FROM supplier_invoice ${where} ORDER BY supplier_short, seller_name, invoice_date`,
       )
@@ -248,7 +252,9 @@ function listBody(
               <td class="px-2 py-2 text-slate-600">
                 ${r.invoice_url
                   ? html`<a href="${r.invoice_url}" target="_blank" rel="noopener" class="text-blue-700 hover:underline" title="Mở hóa đơn gốc"><b>${esc(r.invoice_no)}</b> ↗</a>`
-                  : html`<b class="text-slate-500" title="Không có hóa đơn gốc">${esc(r.invoice_no)}</b>`}
+                  : r.source_doc_key
+                    ? html`<a href="/invoices/${String(r.id)}/original" target="_blank" rel="noopener" class="text-blue-700 hover:underline" title="Mở hóa đơn gốc"><b>${esc(r.invoice_no)}</b> ↗</a>`
+                    : html`<b class="text-slate-500" title="Không có hóa đơn gốc">${esc(r.invoice_no)}</b>`}
               </td>
               <td class="px-2 py-2">${esc(r.invoice_date)}</td>
               <td class="px-2 py-2 text-right font-medium">${money(r.total)}</td>
@@ -280,6 +286,26 @@ function listBody(
 // Yêu cầu: thao tác trực tiếp ở /invoices; nhấn HĐ mở hóa đơn gốc (invoice_url).
 // Giữ detailBody()/confirm/reject bên dưới để bật lại sau, chỉ chặn truy cập trang này.
 invoiceRoutes.get('/:id{[0-9]+}', (c) => c.redirect('/invoices'));
+
+// Xem HÓA ĐƠN GỐC (PDF/XML đã lưu) — phục vụ inline để mở thẳng trong trình duyệt.
+invoiceRoutes.get('/:id{[0-9]+}/original', async (c) => {
+  const id = Number(c.req.param('id'));
+  const inv = await c.env.DB.prepare(
+    `SELECT source_doc_key, source_doc_name, source_doc_mime FROM supplier_invoice WHERE id = ?1`,
+  )
+    .bind(id)
+    .first<{ source_doc_key: string | null; source_doc_name: string | null; source_doc_mime: string | null }>();
+  if (!inv?.source_doc_key) throw notFound('Hóa đơn này không có file gốc');
+  const bytes = await c.env.FILES.get(inv.source_doc_key);
+  if (!bytes) throw notFound('File gốc không tồn tại trên lưu trữ');
+  const safeName = (inv.source_doc_name ?? `hoadon-${id}`).replace(/[\r\n"\\]/g, '_');
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': inv.source_doc_mime || 'application/octet-stream',
+      'Content-Disposition': `inline; filename="${safeName}"`,
+    },
+  });
+});
 
 function detailBody(
   inv: InvoiceRow,
@@ -507,6 +533,55 @@ invoiceRoutes.post('/admin/ingest-now', async (c) => {
   return c.redirect(`/invoices/admin/buyer-map?flash=${encodeURIComponent(msg)}`);
 });
 
+// Backfill HÓA ĐƠN GỐC cho HĐ cũ (nguồn XML) — đọc lại attachment từ mailbox theo
+// source_message_id, lấy PDF (fallback XML) lưu vào FILES. Idempotent (chỉ HĐ chưa có file).
+invoiceRoutes.post('/admin/backfill-original', async (c) => {
+  const mailbox = c.env.INVOICE_MAILBOX;
+  if (!mailbox) return c.redirect(`/invoices/admin/buyer-map?flash=${encodeURIComponent('INVOICE_MAILBOX chưa cấu hình')}`);
+  const rows =
+    (
+      await c.env.DB.prepare(
+        `SELECT id, serial, invoice_no, source_message_id FROM supplier_invoice
+          WHERE source_doc_key IS NULL AND source_message_id IS NOT NULL AND status <> 'rejected'`,
+      ).all<{ id: number; serial: string | null; invoice_no: string | null; source_message_id: string }>()
+    ).results ?? [];
+
+  let ok = 0, asPdf = 0, asXml = 0, miss = 0, err = 0;
+  for (const r of rows) {
+    try {
+      const atts = await graphListAttachments(c.env, mailbox, r.source_message_id);
+      const want = `${r.invoice_no ?? ''}_${r.serial ?? ''}`.toLowerCase();
+      const no = (r.invoice_no ?? '').toLowerCase();
+      const pdfs = atts.filter((a) => /\.pdf$/i.test(a.name));
+      let doc = pdfs.find((a) => a.name.replace(/\.pdf$/i, '').toLowerCase() === want);
+      if (!doc && no) doc = pdfs.find((a) => a.name.toLowerCase().includes(no) && !/bangke|bang ?k[eê]/i.test(a.name));
+      let mime = 'application/pdf';
+      if (!doc) {
+        const xmls = atts.filter((a) => /\.xml$/i.test(a.name));
+        doc =
+          xmls.find((a) => a.name.replace(/\.xml$/i, '').toLowerCase() === want) ??
+          (no ? xmls.find((a) => a.name.toLowerCase().includes(no)) : undefined) ??
+          xmls[0];
+        mime = 'application/xml';
+      }
+      if (!doc) { miss++; continue; }
+      const stored = await c.env.FILES.put(doc.bytes);
+      await c.env.DB.prepare(
+        `UPDATE supplier_invoice SET source_doc_key = ?2, source_doc_name = ?3, source_doc_mime = ?4 WHERE id = ?1`,
+      )
+        .bind(r.id, stored.key, doc.name, mime)
+        .run();
+      ok++;
+      mime === 'application/pdf' ? asPdf++ : asXml++;
+    } catch (e) {
+      err++;
+      console.error('[backfill-original]', r.id, e);
+    }
+  }
+  const msg = `Backfill HĐ gốc: ${ok}/${rows.length} (PDF ${asPdf}, XML ${asXml}) · không thấy file ${miss} · lỗi ${err}`;
+  return c.redirect(`/invoices/admin/buyer-map?flash=${encodeURIComponent(msg)}`);
+});
+
 invoiceRoutes.get('/admin/buyer-map', async (c) => {
   const user = c.get('user')!;
   const flash = c.req.query('flash') ?? '';
@@ -534,9 +609,14 @@ function buyerMapBody(
     </div>
     ${flash ? html`<div class="mb-4 p-3 rounded-md bg-emerald-50 text-emerald-800 text-sm ring-1 ring-emerald-200">${flash}</div>` : ''}
     <p class="text-sm text-slate-500 mb-4">HĐ về sẽ tự gán nhà máy theo MST bên mua. Map cũng tự cập nhật khi bạn xác nhận 1 HĐ.</p>
-    <form method="post" action="/invoices/admin/ingest-now" class="mb-4">
-      <button class="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-sm">⟳ Chạy ingest ngay (test — không chờ cron)</button>
-    </form>
+    <div class="flex flex-wrap gap-2 mb-4">
+      <form method="post" action="/invoices/admin/ingest-now">
+        <button class="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-sm">⟳ Chạy ingest ngay (test — không chờ cron)</button>
+      </form>
+      <form method="post" action="/invoices/admin/backfill-original">
+        <button class="px-4 py-1.5 bg-slate-600 hover:bg-slate-700 text-white rounded-md text-sm">⤓ Backfill hóa đơn gốc (HĐ XML cũ)</button>
+      </form>
+    </div>
     <form method="post" action="/invoices/admin/buyer-map" class="flex flex-wrap gap-2 items-end bg-white p-4 rounded-lg ring-1 ring-slate-200 mb-4">
       <label class="flex flex-col text-xs text-slate-500 gap-1">MST bên mua
         <input type="text" name="buyer_tax_code" required class="px-2 py-1.5 border border-slate-300 rounded-md text-sm" />

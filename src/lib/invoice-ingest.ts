@@ -98,7 +98,14 @@ async function extractFromMessage(
       if (/<HDon\b|<TDiep\b|<DLHDon\b/i.test(xml)) {
         try {
           const inv = parseTT78Xml(xml);
-          if (usable(inv)) result.push(inv);
+          if (usable(inv)) {
+            // HĐ gốc: ưu tiên PDF cùng tên file với XML (bản đọc được), fallback chính XML.
+            const pdf = pickSourcePdf(atts, a.name, inv.invoiceNo);
+            inv.sourceDoc = pdf
+              ? { name: pdf.name, mime: 'application/pdf', bytes: pdf.bytes }
+              : { name: a.name, mime: 'application/xml', bytes: a.bytes };
+            result.push(inv);
+          }
         } catch (e) {
           console.error('[invoice-ingest] parse XML lỗi', a.name, e);
         }
@@ -141,6 +148,37 @@ async function extractFromMessage(
     if (result.length) break;
   }
   return result;
+}
+
+// Chọn PDF "hóa đơn gốc" khớp với XML: ưu tiên PDF trùng tên file (bỏ đuôi); nếu không
+// có thì PDF nào chứa số HĐ nhưng KHÔNG phải bảng kê. null = không tìm thấy PDF phù hợp.
+function pickSourcePdf(
+  atts: { name: string; bytes: Uint8Array }[],
+  xmlName: string,
+  invoiceNo: string | null,
+): { name: string; bytes: Uint8Array } | null {
+  const base = xmlName.replace(/\.xml$/i, '').toLowerCase();
+  const pdfs = atts.filter((a) => /\.pdf$/i.test(a.name));
+  let pdf = pdfs.find((a) => a.name.replace(/\.pdf$/i, '').toLowerCase() === base);
+  if (!pdf && invoiceNo) {
+    const no = invoiceNo.toLowerCase();
+    pdf = pdfs.find((a) => a.name.toLowerCase().includes(no) && !/bangke|bang ?k[eê]/i.test(a.name));
+  }
+  return pdf ?? null;
+}
+
+// Lưu file HĐ gốc vào FILES + ghi tham chiếu lên dòng HĐ. Lỗi lưu file không chặn ingest.
+async function storeSourceDoc(env: Bindings, invoiceId: number, doc: NonNullable<InvoiceData['sourceDoc']>): Promise<void> {
+  try {
+    const stored = await env.FILES.put(doc.bytes);
+    await env.DB.prepare(
+      `UPDATE supplier_invoice SET source_doc_key = ?2, source_doc_name = ?3, source_doc_mime = ?4 WHERE id = ?1`,
+    )
+      .bind(invoiceId, stored.key, doc.name, doc.mime)
+      .run();
+  } catch (e) {
+    console.error('[invoice-ingest] lưu HĐ gốc lỗi', doc.name, e);
+  }
 }
 
 // Lưu HĐ + dòng chi tiết. Trả invoice id nếu tạo mới; null nếu trùng (đã tồn tại).
@@ -210,6 +248,7 @@ async function persistInvoice(
       .bind(row.id, ln.seq, ln.itemName, ln.unit, ln.qty, ln.unitPrice, ln.vatRate, ln.amount)
       .run();
   }
+  if (inv.sourceDoc) await storeSourceDoc(env, row.id, inv.sourceDoc);
   return row.id;
 }
 

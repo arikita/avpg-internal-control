@@ -42,6 +42,8 @@ export type InvoiceData = {
   total: number | null; // tổng thanh toán (gồm thuế)
   amountWords: string | null;
   lines: InvoiceLine[];
+  // File HĐ gốc đính kèm mail (PDF ưu tiên, fallback XML) — lưu vào FILES lúc persist.
+  sourceDoc?: { name: string; mime: string; bytes: Uint8Array } | null;
 };
 
 // ===== Helpers =====

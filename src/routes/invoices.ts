@@ -259,7 +259,7 @@ function listBody(
               <td class="px-2 py-2">${esc(r.invoice_date)}</td>
               <td class="px-2 py-2 text-right font-medium">${money(r.total)}</td>
               <td class="px-2 py-2 text-right">
-                <input type="number" name="paid_amount" form="${fid}" value="${esc(r.paid_amount)}" step="any" min="0"
+                <input type="text" inputmode="numeric" name="paid_amount" form="${fid}" value="${r.paid_amount == null ? '' : money(r.paid_amount)}" oninput="fmtVnd(this)"
                   class="w-28 px-1.5 py-1 text-right border border-slate-200 rounded focus:border-blue-400 focus:ring-1 focus:ring-blue-200" />
               </td>
               <td class="px-2 py-2 text-right ${outstanding > 0 ? 'text-rose-600 font-medium' : 'text-slate-300'}">${outstanding > 0 ? money(outstanding) : '0'}</td>
@@ -279,7 +279,19 @@ function listBody(
           </tbody>
         </table>
       </div>`}
-    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · nhập <b>Đã TT</b> + <b>Công nợ (ngày)</b> rồi bấm <b>Lưu</b> ngay trên dòng · nhấn số HĐ để mở hóa đơn gốc.</p>`;
+    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · nhập <b>Đã TT</b> + <b>Công nợ (ngày)</b> rồi bấm <b>Lưu</b> ngay trên dòng · nhấn số HĐ để mở hóa đơn gốc.</p>
+    <script>
+      // Định dạng ô tiền theo kiểu VN (dấu . ngăn nghìn) khi gõ; server tự bỏ dấu chấm khi lưu.
+      function fmtVnd(el) {
+        var before = el.value.slice(0, el.selectionStart).replace(/\\D/g, '').length;
+        var digits = el.value.replace(/\\D/g, '');
+        var out = digits ? Number(digits).toLocaleString('vi-VN') : '';
+        el.value = out;
+        var pos = 0, seen = 0;
+        while (pos < out.length && seen < before) { if (/\\d/.test(out[pos])) seen++; pos++; }
+        try { el.setSelectionRange(pos, pos); } catch (e) {}
+      }
+    </script>`;
 }
 
 // ===== Chi tiết — TẠM ĐÓNG =====
@@ -483,7 +495,9 @@ invoiceRoutes.post('/:id{[0-9]+}/confirm', async (c) => {
 invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
   const id = Number(c.req.param('id'));
   const b = await c.req.parseBody();
-  const paidAmount = b.paid_amount ? Number(b.paid_amount) : 0;
+  // Ô Đã TT hiển thị dạng VN có dấu chấm ngăn nghìn (vd 3.324.240) → bỏ ký tự không phải số.
+  const paidDigits = String(b.paid_amount ?? '').replace(/[^\d]/g, '');
+  const paidAmount = paidDigits ? Number(paidDigits) : 0;
   const creditTermRaw = String(b.credit_term_days ?? '').trim();
   const creditTerm = creditTermRaw === '' ? null : Math.max(0, Math.round(Number(creditTermRaw)));
 

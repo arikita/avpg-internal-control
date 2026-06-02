@@ -143,6 +143,14 @@ function valueSpanAfter(html: string, labelRe: string): string | null {
   const m = html.match(re);
   return m ? stripTags(m[1] ?? '') || null : null;
 }
+// Số HĐ template "nhãn + (No.)": sau nhãn tiếng Anh "(No.)" là <strong>/<b> hoặc
+// <span class="value"> chứa số (vd NGÂN LỘC PHÚ: Số (No.): <strong>211</strong>).
+function invoiceNoFallback(html: string): string | null {
+  const m =
+    html.match(/\(No\.\)[\s\S]{0,120}?<(?:strong|b)[^>]*>([^<]+)<\/(?:strong|b)>/i) ??
+    html.match(/\(No\.\)[\s\S]{0,120}?class="value"[^>]*>([^<]+)</i);
+  return m ? stripTags(m[1] ?? '').trim() || null : null;
+}
 // <b>…</b> đầu tiên sau 1 nhãn (bỏ qua <span> ẩn không chứa <b>).
 function boldAfter(html: string, labelRe: string): string | null {
   const re = new RegExp(`${labelRe}[\\s\\S]{0,200}?<b[^>]*>([^<]+)</b>`, 'i');
@@ -226,7 +234,7 @@ export function parseEasyInvoiceHtml(raw: string): InvoiceData {
   return {
     provider: 'easyinvoice',
     serial: byClass(html, 'serial-value') ?? valueSpanAfter(html, 'Ký hiệu'),
-    invoiceNo: byClass(html, 'no-value'),
+    invoiceNo: byClass(html, 'no-value') ?? invoiceNoFallback(html),
     invoiceDate,
     taxAuthCode: byClass(html, 'ma-value'),
     lookupCode,

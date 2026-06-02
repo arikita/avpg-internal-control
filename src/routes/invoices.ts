@@ -151,7 +151,14 @@ invoiceRoutes.get('/', async (c) => {
     (
       await c.env.DB.prepare(
         `SELECT id, status, serial, invoice_no, invoice_date, invoice_url, source_doc_key, seller_name, supplier_short, branch,
-                subtotal, vat_amount, total, payment_status, paid_amount, credit_term_days, proposal_code
+                subtotal, vat_amount, total, payment_status, paid_amount,
+                -- Công nợ (ngày) theo NCC (giống XLOOKUP sheet BIỂU ĐỒ): ưu tiên số ngày mặc định
+                -- của NCC (supplier_alias), fallback giá trị từng HĐ cũ nếu NCC chưa set.
+                COALESCE(
+                  (SELECT sa.default_credit_term FROM supplier_alias sa WHERE sa.seller_tax_code = supplier_invoice.seller_tax_code),
+                  credit_term_days
+                ) AS credit_term_days,
+                proposal_code
            FROM supplier_invoice ${where} ORDER BY supplier_short, seller_name, invoice_date`,
       )
         .bind(...params)
@@ -233,7 +240,7 @@ function listBody(
               <th class="text-right px-2 py-2">Thành tiền</th>
               <th class="text-right px-2 py-2">Đã TT</th>
               <th class="text-right px-2 py-2">Chưa TT</th>
-              <th class="text-center px-2 py-2">Công nợ (ngày)</th>
+              <th class="text-center px-2 py-2" title="Số ngày được nợ theo NCC — sửa 1 dòng áp cho mọi HĐ của NCC đó">Công nợ (ngày)*</th>
               <th class="text-center px-2 py-2">Tình trạng</th>
               <th class="text-right px-2 py-2">Quá hạn (ngày)</th>
               <th class="text-center px-2 py-2"></th>
@@ -279,7 +286,7 @@ function listBody(
           </tbody>
         </table>
       </div>`}
-    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · nhập <b>Đã TT</b> + <b>Công nợ (ngày)</b> rồi bấm <b>Lưu</b> ngay trên dòng · nhấn số HĐ để mở hóa đơn gốc.</p>
+    <p class="text-xs text-slate-400 mt-3">${String(rows.length)} hóa đơn · nhập <b>Đã TT</b> + <b>Công nợ (ngày)</b> rồi bấm <b>Lưu</b> ngay trên dòng · nhấn số HĐ để mở hóa đơn gốc.<br><span class="text-slate-400">*Công nợ (ngày) là theo <b>NCC</b> — sửa ở 1 dòng sẽ áp cho mọi hóa đơn của NCC đó.</span></p>
     <script>
       // Định dạng ô tiền theo kiểu VN (dấu . ngăn nghìn) khi gõ; server tự bỏ dấu chấm khi lưu.
       function fmtVnd(el) {

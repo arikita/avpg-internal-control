@@ -133,6 +133,7 @@ invoiceRoutes.get('/', async (c) => {
   const user = c.get('user')!;
   const branch = c.req.query('branch') ?? '';
   const q = (c.req.query('q') ?? '').trim();
+  const pay = c.req.query('pay') ?? 'all'; // all | unpaid | partial | paid (suy từ Đã TT vs Tổng)
 
   const conds: string[] = [`status <> 'rejected'`];
   const params: unknown[] = [];
@@ -147,13 +148,13 @@ invoiceRoutes.get('/', async (c) => {
   }
   const where = `WHERE ${conds.join(' AND ')}`;
   // Toàn bộ HĐ khớp lọc (không LIMIT) — để dựng bảng + tính KPI công nợ giống sheet.
-  const rows =
+  const allRows =
     (
       await c.env.DB.prepare(
         `SELECT id, status, serial, invoice_no, invoice_date, invoice_url, source_doc_key, seller_name, supplier_short, branch,
                 subtotal, vat_amount, total, payment_status, paid_amount,
-                -- Công nợ (ngày) theo NCC (giống XLOOKUP sheet BIỂU ĐỒ): ưu tiên số ngày mặc định
-                -- của NCC (supplier_alias), fallback giá trị từng HĐ cũ nếu NCC chưa set.
+                -- Công nợ (ngày) theo NCC: ưu tiên số ngày mặc định của NCC (supplier_alias),
+                -- fallback giá trị từng HĐ cũ nếu NCC chưa set.
                 COALESCE(
                   (SELECT sa.default_credit_term FROM supplier_alias sa WHERE sa.seller_tax_code = supplier_invoice.seller_tax_code),
                   credit_term_days
@@ -165,7 +166,13 @@ invoiceRoutes.get('/', async (c) => {
         .all<InvoiceRow>()
     ).results ?? [];
 
-  // KPI header (sổ Excel: TỔNG công nợ chưa trả + QUÁ HẠN). Tính trên tập đang lọc.
+  // Đếm theo TT thanh toán (suy từ Đã TT vs Tổng) để hiện số trên nút lọc.
+  const counts = { all: allRows.length, unpaid: 0, partial: 0, paid: 0 };
+  for (const r of allRows) counts[derivePayStatus(r.total, r.paid_amount)]++;
+  // Lọc theo nút TT thanh toán đang chọn.
+  const rows = pay === 'all' ? allRows : allRows.filter((r) => derivePayStatus(r.total, r.paid_amount) === pay);
+
+  // KPI header (TỔNG công nợ chưa trả + QUÁ HẠN) — tính trên tập đang hiển thị.
   let totalOutstanding = 0;
   let totalOverdue = 0;
   for (const r of rows) {
@@ -184,7 +191,7 @@ invoiceRoutes.get('/', async (c) => {
       title: 'Hóa đơn NCC',
       user,
       wide: true,
-      body: listBody(rows, { branch, q, branches, totalOutstanding, totalOverdue }),
+      body: listBody(rows, { branch, q, pay, counts, branches, totalOutstanding, totalOverdue }),
     }),
   );
 });
@@ -194,6 +201,8 @@ function listBody(
   f: {
     branch: string;
     q: string;
+    pay: string;
+    counts: { all: number; unpaid: number; partial: number; paid: number };
     branches: { name: string }[];
     totalOutstanding: number;
     totalOverdue: number;
@@ -204,6 +213,18 @@ function listBody(
       <div class="text-xs text-slate-400 uppercase tracking-wide">${label}</div>
       <div class="text-xl font-bold ${cls}">${value}</div>
     </div>`;
+  // Nút lọc theo TT thanh toán — giữ nguyên bộ lọc nhà máy / tìm kiếm hiện tại.
+  const qs = (p: string) => {
+    const u = new URLSearchParams();
+    if (p !== 'all') u.set('pay', p);
+    if (f.branch) u.set('branch', f.branch);
+    if (f.q) u.set('q', f.q);
+    const s = u.toString();
+    return s ? `/invoices?${s}` : '/invoices';
+  };
+  const payTab = (key: string, label: string, n: number, activeCls: string) =>
+    html`<a href="${qs(key)}"
+      class="px-3 py-1.5 rounded-md text-sm ${f.pay === key ? activeCls : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}">${label} <span class="opacity-70">(${String(n)})</span></a>`;
   return html`
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-xl font-semibold text-slate-800">🧾 Hóa đơn NCC — Theo dõi công nợ</h1>
@@ -213,7 +234,14 @@ function listBody(
       ${kpi('Quá hạn', money(f.totalOverdue), 'text-rose-600')}
       ${kpi('Ngày cập nhật', vnDisplay(nowIso()).slice(0, 10), 'text-slate-700')}
     </div>
+    <div class="flex flex-wrap gap-2 mb-3">
+      ${payTab('all', 'Tất cả', f.counts.all, 'bg-blue-900 text-white')}
+      ${payTab('unpaid', 'Đang thanh toán', f.counts.unpaid, 'bg-rose-600 text-white')}
+      ${payTab('partial', 'Đã tạm ứng', f.counts.partial, 'bg-amber-500 text-white')}
+      ${payTab('paid', 'Đã thanh toán', f.counts.paid, 'bg-emerald-700 text-white')}
+    </div>
     <form method="get" action="/invoices" class="flex flex-wrap gap-2 mb-4 items-end">
+      <input type="hidden" name="pay" value="${f.pay}" />
       <label class="flex flex-col text-xs text-slate-500 gap-1">Nhà máy
         <select name="branch" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm">
           <option value="">— Tất cả —</option>
@@ -232,7 +260,6 @@ function listBody(
           <thead class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wide">
             <tr>
               <th class="text-right px-2 py-2">STT</th>
-              <th class="text-center px-2 py-2">TT thanh toán</th>
               <th class="text-left px-2 py-2">Nhà máy</th>
               <th class="text-left px-2 py-2">Nhà cung cấp</th>
               <th class="text-left px-2 py-2">Số HĐ</th>
@@ -253,7 +280,6 @@ function listBody(
               const fid = `pay-${String(r.id)}`;
               return html`<tr class="border-t border-slate-100 hover:bg-blue-50/40">
               <td class="px-2 py-2 text-right text-slate-400">${String(i + 1)}</td>
-              <td class="px-2 py-2 text-center">${payBadge(derivePayStatus(r.total, r.paid_amount))}</td>
               <td class="px-2 py-2">${r.branch ? esc(r.branch) : html`<span class="text-rose-500 text-xs">chưa gán</span>`}</td>
               <td class="px-2 py-2">${esc(r.supplier_short ?? r.seller_name)}</td>
               <td class="px-2 py-2 text-slate-600">

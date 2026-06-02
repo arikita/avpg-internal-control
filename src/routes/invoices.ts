@@ -163,6 +163,7 @@ invoiceRoutes.get('/', async (c) => {
     page({
       title: 'Hóa đơn NCC',
       user,
+      wide: true,
       body: listBody(rows, { status, branch, q, branches, pendingCount, totalOutstanding, totalOverdue }),
     }),
   );

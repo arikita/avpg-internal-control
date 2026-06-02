@@ -14,15 +14,18 @@ type LayoutOpts = {
   bodyClass?: string;
   // noChrome: bỏ header/footer + container — dùng cho trang landing full-bleed.
   noChrome?: boolean;
+  // wide: nới container rộng hơn (trang nhiều cột, vd bảng công nợ HĐ NCC).
+  wide?: boolean;
 };
 
-export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChrome = false }: LayoutOpts): Promise<HtmlEscapedString> {
+export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChrome = false, wide = false }: LayoutOpts): Promise<HtmlEscapedString> {
   const resolvedBody = typeof body === 'string' ? body : await body;
+  const containerW = wide ? 'max-w-screen-2xl' : 'max-w-6xl';
   const chrome = noChrome
     ? html`${resolvedBody}`
     : html`
   <header class="bg-gradient-to-r from-blue-950 via-blue-900 to-blue-800 text-white shadow-sm">
-    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+    <div class="${containerW} mx-auto px-4 py-3 flex items-center justify-between">
       <a href="/" class="flex items-center gap-3">
         <span class="text-xl">📋</span>
         <span class="flex flex-col leading-tight">
@@ -58,12 +61,12 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
     </div>
   </header>
   <main class="flex-1">
-    <div class="max-w-6xl mx-auto px-4 py-6">
+    <div class="${containerW} mx-auto px-4 py-6">
       ${resolvedBody}
     </div>
   </main>
   <footer class="border-t border-slate-200 bg-white">
-    <div class="max-w-6xl mx-auto px-4 py-3 text-xs text-slate-400 flex justify-between">
+    <div class="${containerW} mx-auto px-4 py-3 text-xs text-slate-400 flex justify-between">
       <span>© 2026 An Việt Phát Group · Hệ thống quy trình nội bộ</span>
       <span>Phase 1</span>
     </div>

@@ -60,6 +60,18 @@ type InvoiceRow = {
   created_at: string;
 };
 
+// Cột "TT THANH TOÁN" KHÔNG nhập tay — suy ra từ "Đã TT" (paid) so với "Thành tiền" (total):
+//   paid >= total (total>0)  → 'paid'    (Đã thanh toán)
+//   0 < paid < total         → 'partial' (Đã tạm ứng)
+//   paid <= 0 / chưa nhập    → 'unpaid'  (Đang thanh toán)
+function derivePayStatus(total: unknown, paid: unknown): 'unpaid' | 'partial' | 'paid' {
+  const t = Number(total ?? 0);
+  const p = Number(paid ?? 0);
+  if (p <= 0) return 'unpaid';
+  if (t > 0 && p >= t) return 'paid';
+  return 'partial';
+}
+
 // Cột "TT THANH TOÁN" của sổ Excel: Đang thanh toán / Đã tạm ứng / Đã thanh toán.
 function payBadge(status: string) {
   const map: Record<string, { label: string; cls: string }> = {
@@ -74,8 +86,13 @@ function payBadge(status: string) {
 // Cột "TÌNH TRẠNG" (L) + "NGÀY QUÁ HẠN" (M) — tính từ ngày HĐ + số ngày được nợ.
 //   hạn = ngày HĐ + credit_term_days; quá hạn khi (hôm nay − ngày HĐ) > số ngày nợ.
 // Trả về { kind, overdueDays } để render badge + số ngày.
-function dueStatus(r: { payment_status: string; invoice_date: string | null; credit_term_days: number | null }) {
-  if (r.payment_status === 'paid') return { kind: 'paid' as const, overdueDays: null };
+function dueStatus(r: {
+  total: number | null;
+  paid_amount: number | null;
+  invoice_date: string | null;
+  credit_term_days: number | null;
+}) {
+  if (derivePayStatus(r.total, r.paid_amount) === 'paid') return { kind: 'paid' as const, overdueDays: null };
   const since = daysSinceDate(r.invoice_date);
   if (since == null || r.credit_term_days == null) return { kind: 'unknown' as const, overdueDays: null };
   const overdue = since - r.credit_term_days; // > 0 = đã quá hạn bấy nhiêu ngày
@@ -240,7 +257,7 @@ function listBody(
               const d = dueStatus(r);
               return html`<tr class="border-t border-slate-100 hover:bg-blue-50/40 ${r.status === 'rejected' ? 'opacity-50' : ''}">
               <td class="px-2 py-2 text-right text-slate-400">${String(i + 1)}</td>
-              <td class="px-2 py-2 text-center">${payBadge(r.payment_status)}</td>
+              <td class="px-2 py-2 text-center">${payBadge(derivePayStatus(r.total, r.paid_amount))}</td>
               <td class="px-2 py-2">${r.branch ? esc(r.branch) : html`<span class="text-rose-500 text-xs">chưa gán</span>`}</td>
               <td class="px-2 py-2">${esc(r.supplier_short ?? r.seller_name)}</td>
               <td class="px-2 py-2 text-slate-600">
@@ -293,7 +310,7 @@ function detailBody(
   return html`
     <div class="mb-4 flex items-center gap-3">
       <a href="/invoices" class="text-sm text-slate-500 hover:underline">← Danh sách</a>
-      ${recBadge(inv.status)} ${payBadge(inv.payment_status)}
+      ${recBadge(inv.status)} ${payBadge(derivePayStatus(inv.total, inv.paid_amount))}
       ${inv.invoice_url ? html`<a href="${inv.invoice_url}" target="_blank" class="text-sm text-blue-600 hover:underline ml-auto">Xem HĐ gốc ↗</a>` : ''}
     </div>
 
@@ -377,20 +394,17 @@ function detailBody(
           const d = dueStatus(inv);
           const outstanding = Number(inv.total ?? 0) - Number(inv.paid_amount ?? 0);
           return html`<div class="flex items-center gap-3 text-sm">
+            ${payBadge(derivePayStatus(inv.total, inv.paid_amount))}
             ${dueBadge(d)}
             ${d.kind === 'overdue' ? html`<span class="text-rose-600">quá hạn ${String(d.overdueDays)} ngày</span>` : ''}
             <span class="text-slate-500">Còn nợ <b class="${outstanding > 0 ? 'text-rose-600' : 'text-slate-700'}">${money(outstanding)}</b></span>
           </div>`;
         })()}
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-5 gap-4 text-sm">
-        <label class="flex flex-col gap-1">Trạng thái
-          <select name="payment_status" class="px-2 py-1.5 border border-slate-300 rounded-md">
-            ${['unpaid', 'partial', 'paid'].map((s) => html`<option value="${s}" ${inv.payment_status === s ? 'selected' : ''}>${s === 'unpaid' ? 'Đang thanh toán' : s === 'partial' ? 'Đã tạm ứng' : 'Đã thanh toán'}</option>`)}
-          </select>
-        </label>
-        <label class="flex flex-col gap-1">Đã thanh toán
-          <input type="number" name="paid_amount" value="${esc(inv.paid_amount)}" step="any" class="px-2 py-1.5 border border-slate-300 rounded-md" />
+      <p class="text-xs text-slate-400 mb-3">TT thanh toán tự suy từ "Đã thanh toán" so với Tổng (${money(inv.total)}): đủ → Đã thanh toán · một phần → Đã tạm ứng · 0 → Đang thanh toán.</p>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+        <label class="flex flex-col gap-1">Đã thanh toán (Đã TT)
+          <input type="number" name="paid_amount" value="${esc(inv.paid_amount)}" step="any" min="0" class="px-2 py-1.5 border border-slate-300 rounded-md" />
         </label>
         <label class="flex flex-col gap-1">Công nợ (số ngày)
           <input type="number" name="credit_term_days" value="${esc(inv.credit_term_days)}" min="0" step="1" placeholder="vd 30" class="px-2 py-1.5 border border-slate-300 rounded-md" />
@@ -462,10 +476,16 @@ invoiceRoutes.post('/:id{[0-9]+}/confirm', async (c) => {
 invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
   const id = Number(c.req.param('id'));
   const b = await c.req.parseBody();
-  const paymentStatus = String(b.payment_status ?? 'unpaid');
   const paidAmount = b.paid_amount ? Number(b.paid_amount) : 0;
   const creditTermRaw = String(b.credit_term_days ?? '').trim();
   const creditTerm = creditTermRaw === '' ? null : Math.max(0, Math.round(Number(creditTermRaw)));
+
+  // TT thanh toán suy ra từ Đã TT so với Thành tiền — KSNB không nhập tay.
+  const inv = await c.env.DB.prepare(`SELECT total, seller_tax_code FROM supplier_invoice WHERE id = ?1`)
+    .bind(id)
+    .first<{ total: number | null; seller_tax_code: string | null }>();
+  const paymentStatus = derivePayStatus(inv?.total, paidAmount);
+
   await c.env.DB.prepare(
     `UPDATE supplier_invoice
         SET payment_status = ?2, paid_amount = ?3, credit_term_days = ?4,
@@ -484,17 +504,12 @@ invoiceRoutes.post('/:id{[0-9]+}/payment', async (c) => {
     .run();
 
   // Ghi nhớ số ngày được nợ làm mặc định cho NCC (auto-fill HĐ sau).
-  if (creditTerm != null) {
-    const inv = await c.env.DB.prepare(`SELECT seller_tax_code FROM supplier_invoice WHERE id = ?1`)
-      .bind(id)
-      .first<{ seller_tax_code: string | null }>();
-    if (inv?.seller_tax_code) {
-      await c.env.DB.prepare(
-        `UPDATE supplier_alias SET default_credit_term = ?2, updated_at = iso_now() WHERE seller_tax_code = ?1`,
-      )
-        .bind(inv.seller_tax_code, creditTerm)
-        .run();
-    }
+  if (creditTerm != null && inv?.seller_tax_code) {
+    await c.env.DB.prepare(
+      `UPDATE supplier_alias SET default_credit_term = ?2, updated_at = iso_now() WHERE seller_tax_code = ?1`,
+    )
+      .bind(inv.seller_tax_code, creditTerm)
+      .run();
   }
   return c.redirect(`/invoices/${id}`);
 });

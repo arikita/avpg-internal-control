@@ -6,7 +6,7 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { html, raw } from 'hono/html';
-import type { AppEnv } from '../types';
+import type { AppEnv, SessionUser } from '../types';
 import { page } from '../web/layout';
 import { badRequest, forbidden, notFound, unprocessable } from '../lib/errors';
 import { nowIso, vnDisplay } from '../lib/time';
@@ -246,7 +246,7 @@ paymentRoutes.get('/new', (c) => {
   const user = c.get('user')!;
   if (!user.deptCode)
     throw unprocessable('Tài khoản chưa được gán phòng ban. Liên hệ quản trị hệ thống.', 'no_department');
-  return c.html(page({ title: 'Tạo đề nghị thanh toán', user, body: formBody(null) }));
+  return c.html(page({ title: 'Tạo đề nghị thanh toán', user, body: formBody(user, null) }));
 });
 
 paymentRoutes.get('/:id{[0-9]+}/edit', async (c) => {
@@ -267,10 +267,10 @@ paymentRoutes.get('/:id{[0-9]+}/edit', async (c) => {
         .bind(id)
         .all<PrItem>()
     ).results ?? [];
-  return c.html(page({ title: `Sửa ${pr.code ?? 'phiếu'}`, user, body: formBody({ pr, items }) }));
+  return c.html(page({ title: `Sửa ${pr.code ?? 'phiếu'}`, user, body: formBody(user, { pr, items }) }));
 });
 
-function formBody(existing: { pr: PrRow; items: PrItem[] } | null) {
+function formBody(me: SessionUser, existing: { pr: PrRow; items: PrItem[] } | null) {
   const pr = existing?.pr ?? null;
   const action = pr ? `/payments/${pr.id}` : '/payments';
   const cancelHref = pr ? `/payments/${pr.id}` : '/payments';
@@ -296,15 +296,14 @@ function formBody(existing: { pr: PrRow; items: PrItem[] } | null) {
       <form method="post" action="${action}" x-data="prForm()" @submit="prepare()"
         class="bg-white rounded-xl ring-1 ring-slate-200 p-6 space-y-5">
         <div class="grid md:grid-cols-2 gap-4">
-          <label class="flex flex-col gap-1 text-sm">Họ &amp; tên người thanh toán
-            <input name="payee_name" value="${v(pr?.payee_name)}" required
-              class="px-3 py-2 border border-slate-300 rounded-md" placeholder="Người nhận tiền" />
-          </label>
-          <label class="flex flex-col gap-1 text-sm">Chức danh
-            <input name="payee_title" value="${v(pr?.payee_title)}"
-              class="px-3 py-2 border border-slate-300 rounded-md" />
-          </label>
+          <div class="flex flex-col gap-1 text-sm">Họ &amp; tên người thanh toán
+            <div class="px-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-slate-700">${esc(me.name)}</div>
+          </div>
+          <div class="flex flex-col gap-1 text-sm">Chức danh
+            <div class="px-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-slate-700">${esc(me.jobTitle ?? '—')}</div>
+          </div>
         </div>
+        <p class="text-xs text-slate-400 -mt-3">Tự động lấy theo tài khoản đăng nhập (M365).</p>
         <label class="flex flex-col gap-1 text-sm">Mục đích thanh toán
           <textarea name="purpose" rows="2" required
             class="px-3 py-2 border border-slate-300 rounded-md">${v(pr?.purpose)}</textarea>
@@ -363,8 +362,11 @@ function formBody(existing: { pr: PrRow; items: PrItem[] } | null) {
         <!-- Hình thức thanh toán -->
         <div class="grid md:grid-cols-2 gap-4">
           <label class="flex flex-col gap-1 text-sm">Hình thức thanh toán
-            <input name="pay_form" value="${v(pr?.pay_form)}" placeholder="vd: Công ty chi / Cá nhân ứng trước"
-              class="px-3 py-2 border border-slate-300 rounded-md" />
+            <select name="pay_form" class="px-3 py-2 border border-slate-300 rounded-md">
+              ${['Công ty', 'Cá nhân'].map(
+                (o) => html`<option value="${o}" ${pr?.pay_form === o ? 'selected' : ''}>${o}</option>`,
+              )}
+            </select>
           </label>
           <label class="flex flex-col gap-1 text-sm">Hình thức nhận tiền
             <select name="receive_form" class="px-3 py-2 border border-slate-300 rounded-md">
@@ -480,9 +482,10 @@ paymentRoutes.post('/', async (c) => {
   const user = c.get('user')!;
   if (!user.deptCode) throw unprocessable('Tài khoản chưa được gán phòng ban.', 'no_department');
   const b = await c.req.parseBody();
-  const payee_name = String(b.payee_name ?? '').trim();
+  // Người thanh toán = chính user đang đăng nhập (tên + chức danh M365), không lấy từ form.
+  const payee_name = user.name;
+  const payee_title = user.jobTitle ?? null;
   const purpose = String(b.purpose ?? '').trim();
-  if (!payee_name) throw badRequest('Thiếu họ tên người thanh toán');
   if (!purpose) throw badRequest('Thiếu mục đích thanh toán');
   const { items, total } = parseItems(b.items_json);
   const amount_words = String(b.amount_words ?? '').trim() || readVndWords(total);
@@ -503,7 +506,7 @@ paymentRoutes.post('/', async (c) => {
       user.name,
       user.deptCode,
       payee_name,
-      String(b.payee_title ?? '').trim() || null,
+      payee_title,
       purpose,
       total,
       amount_words,
@@ -556,9 +559,10 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
   if (pr.status !== 'draft') throw unprocessable('Phiếu đã trình ký, không sửa được.');
 
   const b = await c.req.parseBody();
-  const payee_name = String(b.payee_name ?? '').trim();
+  // Người thanh toán = user đang đăng nhập (= người tạo), lấy từ session.
+  const payee_name = user.name;
+  const payee_title = user.jobTitle ?? null;
   const purpose = String(b.purpose ?? '').trim();
-  if (!payee_name) throw badRequest('Thiếu họ tên người thanh toán');
   if (!purpose) throw badRequest('Thiếu mục đích thanh toán');
   const { items, total } = parseItems(b.items_json);
   const amount_words = String(b.amount_words ?? '').trim() || readVndWords(total);
@@ -573,7 +577,7 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
     .bind(
       id,
       payee_name,
-      String(b.payee_title ?? '').trim() || null,
+      payee_title,
       purpose,
       total,
       amount_words,

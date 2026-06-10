@@ -66,6 +66,8 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     .c { text-align: center; }
     .r { text-align: right; }
     .ul { border-bottom: 0.6pt solid #000; }  /* gạch chân ô giá trị */
+    .lblc { white-space: nowrap; vertical-align: bottom; }   /* nhãn — 1 dòng, sát đáy */
+    .valc { vertical-align: bottom; }                         /* giá trị — nằm trên đường kẻ */
 
     .title { text-align: center; font-size: 18pt; font-weight: bold; }
     .logo { width: 32mm; height: auto; display: block; margin: 0 auto; }
@@ -110,25 +112,25 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
 
       <!-- ===== KHỐI THÔNG TIN ===== -->
       <tr style="height:8mm">
-        <td colspan="4" style="white-space:nowrap; vertical-align:middle">Mã số đề nghị:</td>
-        <td colspan="3" class="ul" style="font-weight:bold; vertical-align:middle">${code}</td>
-        <td colspan="4" class="r" style="white-space:nowrap; vertical-align:middle">${dateStr}</td>
+        <td colspan="6" class="lblc">Mã số đề nghị:</td>
+        <td colspan="2" class="ul valc" style="font-weight:bold">${code}</td>
+        <td colspan="3" class="r" style="white-space:nowrap; vertical-align:bottom">${dateStr}</td>
       </tr>
       <tr style="height:8mm">
-        <td colspan="6" style="white-space:nowrap; vertical-align:middle">Họ &amp; tên người thanh toán:</td>
-        <td colspan="5" class="ul" style="vertical-align:middle">${s(pr.payee_name)}</td>
+        <td colspan="6" class="lblc">Họ &amp; tên người thanh toán:</td>
+        <td colspan="5" class="ul valc">${s(pr.payee_name)}</td>
       </tr>
       <tr style="height:8mm">
-        <td colspan="4" style="white-space:nowrap; vertical-align:middle">Chức danh:</td>
-        <td colspan="7" class="ul" style="vertical-align:middle">${s(pr.payee_title)}</td>
+        <td colspan="6" class="lblc">Chức danh:</td>
+        <td colspan="5" class="ul valc">${s(pr.payee_title)}</td>
       </tr>
       <tr style="height:9mm">
-        <td colspan="5" style="white-space:nowrap; vertical-align:middle">Mục đích thanh toán:</td>
-        <td colspan="6" class="ul" style="font-weight:bold; vertical-align:middle">${s(pr.purpose)}</td>
+        <td colspan="6" class="lblc">Mục đích thanh toán:</td>
+        <td colspan="5" class="ul valc" style="font-weight:bold">${s(pr.purpose)}</td>
       </tr>
       <tr style="height:7mm">
-        <td colspan="7" style="white-space:nowrap; vertical-align:middle">Thanh toán tiền theo bảng kê dưới đây:</td>
-        <td colspan="4" class="ul"></td>
+        <td colspan="6" class="lblc">Thanh toán tiền theo bảng kê dưới đây:</td>
+        <td colspan="5" class="ul"></td>
       </tr>
 
       <!-- ===== BẢNG KÊ ===== -->

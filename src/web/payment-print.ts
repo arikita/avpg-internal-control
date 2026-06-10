@@ -56,7 +56,8 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     }
     @media print { .print-bar { display: none; } .sheet { padding: 0; } }
 
-    table.form { width: 100%; border-collapse: collapse; border: 1.4pt solid #000; table-layout: fixed; }
+    /* Thu nhỏ đồng đều cả phiếu cho khớp bản gốc in fit-to-page (chữ + ô cùng tỉ lệ). */
+    table.form { width: 100%; border-collapse: collapse; border: 1.4pt solid #000; table-layout: fixed; zoom: 0.80; }
     table.form > tbody > tr > td { padding: 1mm 2mm; vertical-align: top; }
     .bx { border: 0.75pt solid #000; padding: 0.8mm 1mm; }   /* viền 4 cạnh (bảng kê) */
     .bb { border-bottom: 0.75pt solid #000; }

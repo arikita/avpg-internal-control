@@ -57,7 +57,7 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     @media print { .print-bar { display: none; } .sheet { padding: 0; } }
 
     table.form { width: 100%; border-collapse: collapse; border: 1.4pt solid #000; table-layout: fixed; }
-    table.form > tbody > tr > td { padding: 1mm 2mm; vertical-align: top; overflow: hidden; }
+    table.form > tbody > tr > td { padding: 1mm 2mm; vertical-align: top; }
     .bx { border: 0.75pt solid #000; }   /* viền 4 cạnh (bảng kê) */
     .bb { border-bottom: 0.75pt solid #000; }
     .bt { border-top: 0.75pt solid #000; }
@@ -110,25 +110,25 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
 
       <!-- ===== KHỐI THÔNG TIN ===== -->
       <tr style="height:8mm">
-        <td colspan="3" style="white-space:nowrap; vertical-align:middle">Mã số đề nghị:</td>
-        <td colspan="4" class="ul" style="font-weight:bold; vertical-align:middle">${code}</td>
-        <td colspan="4" class="r" style="vertical-align:middle">${dateStr}</td>
+        <td colspan="4" style="white-space:nowrap; vertical-align:middle">Mã số đề nghị:</td>
+        <td colspan="3" class="ul" style="font-weight:bold; vertical-align:middle">${code}</td>
+        <td colspan="4" class="r" style="white-space:nowrap; vertical-align:middle">${dateStr}</td>
       </tr>
       <tr style="height:8mm">
-        <td colspan="4" style="white-space:nowrap; vertical-align:middle">Họ &amp; tên người thanh toán:</td>
-        <td colspan="7" class="ul" style="vertical-align:middle">${s(pr.payee_name)}</td>
+        <td colspan="6" style="white-space:nowrap; vertical-align:middle">Họ &amp; tên người thanh toán:</td>
+        <td colspan="5" class="ul" style="vertical-align:middle">${s(pr.payee_name)}</td>
       </tr>
       <tr style="height:8mm">
-        <td colspan="3" style="white-space:nowrap; vertical-align:middle">Chức danh:</td>
-        <td colspan="8" class="ul" style="vertical-align:middle">${s(pr.payee_title)}</td>
+        <td colspan="4" style="white-space:nowrap; vertical-align:middle">Chức danh:</td>
+        <td colspan="7" class="ul" style="vertical-align:middle">${s(pr.payee_title)}</td>
       </tr>
       <tr style="height:9mm">
-        <td colspan="4" style="white-space:nowrap; vertical-align:middle">Mục đích thanh toán:</td>
-        <td colspan="7" class="ul" style="font-weight:bold; vertical-align:middle">${s(pr.purpose)}</td>
+        <td colspan="5" style="white-space:nowrap; vertical-align:middle">Mục đích thanh toán:</td>
+        <td colspan="6" class="ul" style="font-weight:bold; vertical-align:middle">${s(pr.purpose)}</td>
       </tr>
       <tr style="height:7mm">
-        <td colspan="6" style="white-space:nowrap; vertical-align:middle">Thanh toán tiền theo bảng kê dưới đây:</td>
-        <td colspan="5" class="ul"></td>
+        <td colspan="7" style="white-space:nowrap; vertical-align:middle">Thanh toán tiền theo bảng kê dưới đây:</td>
+        <td colspan="4" class="ul"></td>
       </tr>
 
       <!-- ===== BẢNG KÊ ===== -->

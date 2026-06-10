@@ -58,7 +58,7 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
 
     table.form { width: 100%; border-collapse: collapse; border: 1.4pt solid #000; table-layout: fixed; }
     table.form > tbody > tr > td { padding: 1mm 2mm; vertical-align: top; }
-    .bx { border: 0.75pt solid #000; }   /* viền 4 cạnh (bảng kê) */
+    .bx { border: 0.75pt solid #000; padding: 0.8mm 1mm; }   /* viền 4 cạnh (bảng kê) */
     .bb { border-bottom: 0.75pt solid #000; }
     .bt { border-top: 0.75pt solid #000; }
     .br { border-right: 0.75pt solid #000; }
@@ -69,16 +69,17 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     .lblc { white-space: nowrap; vertical-align: bottom; }   /* nhãn — 1 dòng, sát đáy */
     .valc { vertical-align: bottom; }                         /* giá trị — nằm trên đường kẻ */
 
-    .title { text-align: center; font-size: 18pt; font-weight: bold; }
+    .title { text-align: center; font-size: 16pt; font-weight: bold; }
+    .th { font-weight: bold; font-size: 13pt; text-align: center; }   /* tiêu đề bảng kê */
     .logo { width: 32mm; height: auto; display: block; margin: 0 auto; }
 
-    table.ctrl { width: 100%; height: 100%; border-collapse: collapse; font-size: 8.5pt; }
-    table.ctrl td { padding: 0.6mm 1.5mm; vertical-align: middle; }
+    table.ctrl { width: 100%; height: 100%; border-collapse: collapse; font-size: 8pt; }
+    table.ctrl td { padding: 0.6mm 1.5mm; vertical-align: middle; white-space: nowrap; }
 
     table.sig { width: 100%; border-collapse: collapse; }
     table.sig td { text-align: center; vertical-align: top; width: 20%; padding: 0 1mm; }
-    .sig-role { font-weight: bold; }
-    .sig-hint { font-style: italic; font-size: 9pt; }
+    .sig-role { font-weight: bold; font-size: 12pt; }
+    .sig-hint { font-style: italic; font-size: 11pt; }
 
     .red { color: #c00; font-weight: bold; }
   </style>
@@ -92,9 +93,9 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     <table class="form">
       <colgroup>
         <col style="width:4.73%" /><col style="width:2.57%" /><col style="width:3.53%" />
-        <col style="width:8.58%" /><col style="width:9.14%" /><col style="width:12.91%" />
-        <col style="width:12.99%" /><col style="width:8.18%" /><col style="width:14.20%" />
-        <col style="width:8.74%" /><col style="width:14.44%" />
+        <col style="width:8.58%" /><col style="width:9.14%" /><col style="width:10.15%" />
+        <col style="width:12.99%" /><col style="width:8.18%" /><col style="width:13.70%" />
+        <col style="width:11.75%" /><col style="width:14.43%" />
       </colgroup>
 
       <!-- ===== HEADER: logo | tiêu đề | mã kiểm soát ===== -->
@@ -135,12 +136,12 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
 
       <!-- ===== BẢNG KÊ ===== -->
       <tr>
-        <td colspan="6" class="bx c" style="font-weight:bold">Diễn giải</td>
-        <td class="bx c" style="font-weight:bold">Đơn giá</td>
-        <td class="bx c" style="font-weight:bold">SL</td>
-        <td class="bx c" style="font-weight:bold">Số tiền</td>
-        <td class="bx c" style="font-weight:bold">Loại tiền</td>
-        <td class="bx c" style="font-weight:bold">Ghi chú</td>
+        <td colspan="6" class="bx th">Diễn giải</td>
+        <td class="bx th">Đơn giá</td>
+        <td class="bx th">SL</td>
+        <td class="bx th">Số tiền</td>
+        <td class="bx th">Loại tiền</td>
+        <td class="bx th">Ghi chú</td>
       </tr>
       ${rows.map((it, i) => {
         const filled = it.description != null || it.amount != null;
@@ -202,8 +203,8 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
 
       <!-- ===== GHI CHÚ ===== -->
       <tr>
-        <td colspan="11" class="bt" style="font-size:8.5pt; font-style:italic">
-          <u>GHI CHÚ:</u> Cách đặt mã số đề nghị: <span class="red">XX01-DDMMYYYY</span>
+        <td colspan="11" class="bt" style="font-size:10pt; font-style:italic">
+          <b><u>GHI CHÚ:</u></b> Cách đặt mã số đề nghị: <span class="red">XX01-DDMMYYYY</span>
         </td>
       </tr>
     </table>

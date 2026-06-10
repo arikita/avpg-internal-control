@@ -26,7 +26,11 @@ function ngayThangNam(iso: string): string {
   return `Ngày ${m[1]} tháng ${m[2]} năm ${m[3]}`;
 }
 
-export function paymentPrintPage(pr: Row, items: Row[]): Html {
+export function paymentPrintPage(
+  pr: Row,
+  items: Row[],
+  sig?: { proposerName?: string; managerName?: string },
+): Html {
   const code = (pr.code as string) ?? '';
   const dateStr = ngayThangNam((pr.created_at as string) ?? '');
   const payForm = s(pr.pay_form) || 'Công ty';
@@ -36,7 +40,15 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
   const rows = items.slice();
   while (rows.length < minRows) rows.push({});
 
-  const SIGS = ['Người đề nghị', 'Trưởng bộ phận', 'Kiểm soát nội bộ', 'Kế toán', 'Ban Giám đốc'];
+  // Khối chữ ký: Người đề nghị (người tạo) + Trưởng bộ phận (manager đã map) in sẵn tên;
+  // 3 chặng còn lại ký + ghi tên tay.
+  const SIGS: Array<{ role: string; name: string }> = [
+    { role: 'Người đề nghị', name: s(sig?.proposerName) },
+    { role: 'Trưởng bộ phận', name: s(sig?.managerName) },
+    { role: 'Kiểm soát nội bộ', name: '' },
+    { role: 'Kế toán', name: '' },
+    { role: 'Ban Giám đốc', name: '' },
+  ];
 
   return html`<!doctype html>
 <html lang="vi">
@@ -194,9 +206,9 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
       <tr>
         <td colspan="11" style="padding-top:2mm">
           <table class="sig">
-            <tr>${SIGS.map((r) => html`<td class="sig-role">${r}</td>`)}</tr>
+            <tr>${SIGS.map((x) => html`<td class="sig-role">${x.role}</td>`)}</tr>
             <tr>${SIGS.map(() => html`<td class="sig-hint">(Ký, Họ và tên)</td>`)}</tr>
-            <tr>${SIGS.map(() => html`<td style="height:30mm"></td>`)}</tr>
+            <tr>${SIGS.map((x) => html`<td style="height:30mm; vertical-align:bottom; font-weight:bold">${x.name}</td>`)}</tr>
           </table>
         </td>
       </tr>

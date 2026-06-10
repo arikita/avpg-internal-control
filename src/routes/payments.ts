@@ -885,5 +885,17 @@ paymentRoutes.get('/:id{[0-9]+}/print', async (c) => {
         .bind(id)
         .all<Record<string, unknown>>()
     ).results ?? [];
-  return c.html(paymentPrintPage(pr, items));
+  // Trưởng bộ phận = manager đã map theo phòng người tạo (lookup mềm — không chặn in nếu chưa map).
+  const mgr = await c.env.DB.prepare(
+    `SELECT user_name AS name FROM department_managers
+      WHERE dept_code = ?1 AND is_active = 1 ORDER BY id ASC LIMIT 1`,
+  )
+    .bind(String(pr.dept_code ?? ''))
+    .first<{ name: string }>();
+  return c.html(
+    paymentPrintPage(pr, items, {
+      proposerName: String(pr.creator_name ?? ''),
+      managerName: mgr?.name ?? '',
+    }),
+  );
 });

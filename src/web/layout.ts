@@ -38,6 +38,9 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
           ? html`
               <a href="/app" class="text-blue-100 hover:text-yellow-400 transition">Dashboard</a>
               <a href="/p/new" class="text-blue-100 hover:text-yellow-400 transition">Tạo phiếu</a>
+              ${user.deptCode?.toUpperCase() === 'IT'
+                ? html`<a href="/payments" class="text-blue-100 hover:text-yellow-400 transition">Đề nghị TT</a>`
+                : ''}
               <a href="/invoices" class="text-blue-100 hover:text-yellow-400 transition">Hóa đơn NCC</a>
               ${user.isAdmin
                 ? html`<div class="relative" x-data="{ o: false }">

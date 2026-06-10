@@ -136,6 +136,11 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
           <button @click="openSettings()" class="text-sm text-slate-600 hover:text-slate-900 px-3 py-2">
             ⚙️ Cài đặt
           </button>
+          ${user.deptCode?.toUpperCase() === 'IT'
+            ? html`<a href="/payments" class="text-sm text-blue-900 hover:text-blue-700 font-medium px-3 py-2.5 rounded-lg ring-1 ring-blue-200 hover:bg-blue-50 transition">
+            💳 Đề nghị Thanh toán
+          </a>`
+            : ''}
           <a href="/p/new" class="bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">
             + Tạo phiếu mới
           </a>

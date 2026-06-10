@@ -17,6 +17,7 @@ import { telegramRoutes } from './routes/telegram';
 import { webRoutes } from './routes/web';
 import { adminRoutes } from './routes/admin';
 import { invoiceRoutes } from './routes/invoices';
+import { paymentRoutes } from './routes/payments';
 import { meRoutes } from './routes/me';
 import { staticRoutes } from './routes/static';
 
@@ -42,6 +43,7 @@ app.route('/api/directory', directoryRoutes);
 app.route('/api/me', meRoutes);
 app.route('/admin', adminRoutes);
 app.route('/invoices', invoiceRoutes);
+app.route('/payments', paymentRoutes);
 app.route('/telegram', telegramRoutes);
 app.route('/static', staticRoutes);
 app.route('/', webRoutes);

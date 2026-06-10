@@ -36,9 +36,8 @@ export function paymentPrintPage(
   const payForm = s(pr.pay_form) || 'Công ty';
   const receiveForm = s(pr.receive_form) || 'CK';
 
-  const minRows = 6;
+  // Chỉ in đúng số dòng có dữ liệu (không chèn dòng trống).
   const rows = items.slice();
-  while (rows.length < minRows) rows.push({});
 
   // Khối chữ ký: Người đề nghị (người tạo) + Trưởng bộ phận (manager đã map) in sẵn tên;
   // 3 chặng còn lại ký + ghi tên tay.
@@ -58,7 +57,7 @@ export function paymentPrintPage(
   <style>
     @page { size: A4; margin: 12mm; }
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif; color: #000; background: #fff; font-size: 10pt; }
+    html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif; color: #000; background: #fff; font-size: 9pt; }
     @media screen {
       body { background: #e5e7eb; padding: 20px; }
       .sheet { background: #fff; margin: 0 auto; box-shadow: 0 2px 8px rgba(0,0,0,.15); padding: 12mm; width: 210mm; }
@@ -81,17 +80,17 @@ export function paymentPrintPage(
     .lblc { white-space: nowrap; vertical-align: bottom; }   /* nhãn — 1 dòng, sát đáy */
     .valc { vertical-align: bottom; }                         /* giá trị — nằm trên đường kẻ */
 
-    .title { text-align: center; font-size: 14pt; font-weight: bold; }
-    .th { font-weight: bold; font-size: 11pt; text-align: center; }   /* tiêu đề bảng kê */
-    .logo { width: 30mm; height: auto; display: block; margin: 0 auto; }
+    .title { text-align: center; font-size: 13pt; font-weight: bold; }
+    .th { font-weight: bold; font-size: 10pt; text-align: center; }   /* tiêu đề bảng kê */
+    .logo { width: 29mm; height: auto; display: block; margin: 0 auto; }
 
-    table.ctrl { width: 100%; height: 100%; border-collapse: collapse; font-size: 7.5pt; }
+    table.ctrl { width: 100%; height: 100%; border-collapse: collapse; font-size: 7pt; }
     table.ctrl td { padding: 0.6mm 1.5mm; vertical-align: middle; white-space: nowrap; }
 
     table.sig { width: 100%; border-collapse: collapse; }
     table.sig td { text-align: center; vertical-align: top; width: 20%; padding: 0 1mm; }
-    .sig-role { font-weight: bold; font-size: 10pt; }
-    .sig-hint { font-style: italic; font-size: 9pt; }
+    .sig-role { font-weight: bold; font-size: 9.5pt; }
+    .sig-hint { font-style: italic; font-size: 8.5pt; }
 
     .red { color: #c00; font-weight: bold; }
   </style>
@@ -186,13 +185,13 @@ export function paymentPrintPage(
       <tr style="height:8mm">
         <td colspan="11" style="vertical-align:middle">
           <span style="white-space:nowrap">Hình thức thanh toán:</span>
-          <span style="display:inline-block; margin-left:32%">${s(payForm)} <span style="font-size:11pt">${cb(true)}</span></span>
+          <span style="display:inline-block; margin-left:32%">${s(payForm)} <span style="font-size:10pt">${cb(true)}</span></span>
         </td>
       </tr>
       <tr style="height:8mm">
         <td colspan="11" style="vertical-align:middle">
           <span style="white-space:nowrap">Hình thức nhận tiền:</span>
-          <span style="display:inline-block; margin-left:32%">${s(receiveForm)} <span style="font-size:11pt">${cb(true)}</span></span>
+          <span style="display:inline-block; margin-left:32%">${s(receiveForm)} <span style="font-size:10pt">${cb(true)}</span></span>
         </td>
       </tr>
 
@@ -215,7 +214,7 @@ export function paymentPrintPage(
 
       <!-- ===== GHI CHÚ ===== -->
       <tr>
-        <td colspan="11" class="bt" style="font-size:8.5pt; font-style:italic">
+        <td colspan="11" class="bt" style="font-size:8pt; font-style:italic">
           <b><u>GHI CHÚ:</u></b> Cách đặt mã số đề nghị: <span class="red">XX01-DDMMYYYY</span>
         </td>
       </tr>

@@ -46,7 +46,7 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
   <style>
     @page { size: A4; margin: 12mm; }
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif; color: #000; background: #fff; font-size: 12pt; }
+    html, body { margin: 0; padding: 0; font-family: 'Times New Roman', Times, serif; color: #000; background: #fff; font-size: 10pt; }
     @media screen {
       body { background: #e5e7eb; padding: 20px; }
       .sheet { background: #fff; margin: 0 auto; box-shadow: 0 2px 8px rgba(0,0,0,.15); padding: 12mm; width: 210mm; }
@@ -56,8 +56,7 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     }
     @media print { .print-bar { display: none; } .sheet { padding: 0; } }
 
-    /* Thu nhỏ đồng đều cả phiếu cho khớp bản gốc in fit-to-page (chữ + ô cùng tỉ lệ). */
-    table.form { width: 100%; border-collapse: collapse; border: 1.4pt solid #000; table-layout: fixed; zoom: 0.80; }
+    table.form { width: 100%; border-collapse: collapse; border: 1.4pt solid #000; table-layout: fixed; }
     table.form > tbody > tr > td { padding: 1mm 2mm; vertical-align: top; }
     .bx { border: 0.75pt solid #000; padding: 0.8mm 1mm; }   /* viền 4 cạnh (bảng kê) */
     .bb { border-bottom: 0.75pt solid #000; }
@@ -70,17 +69,17 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
     .lblc { white-space: nowrap; vertical-align: bottom; }   /* nhãn — 1 dòng, sát đáy */
     .valc { vertical-align: bottom; }                         /* giá trị — nằm trên đường kẻ */
 
-    .title { text-align: center; font-size: 16pt; font-weight: bold; }
-    .th { font-weight: bold; font-size: 13pt; text-align: center; }   /* tiêu đề bảng kê */
-    .logo { width: 32mm; height: auto; display: block; margin: 0 auto; }
+    .title { text-align: center; font-size: 14pt; font-weight: bold; }
+    .th { font-weight: bold; font-size: 11pt; text-align: center; }   /* tiêu đề bảng kê */
+    .logo { width: 30mm; height: auto; display: block; margin: 0 auto; }
 
-    table.ctrl { width: 100%; height: 100%; border-collapse: collapse; font-size: 8pt; }
+    table.ctrl { width: 100%; height: 100%; border-collapse: collapse; font-size: 7.5pt; }
     table.ctrl td { padding: 0.6mm 1.5mm; vertical-align: middle; white-space: nowrap; }
 
     table.sig { width: 100%; border-collapse: collapse; }
     table.sig td { text-align: center; vertical-align: top; width: 20%; padding: 0 1mm; }
-    .sig-role { font-weight: bold; font-size: 12pt; }
-    .sig-hint { font-style: italic; font-size: 11pt; }
+    .sig-role { font-weight: bold; font-size: 10pt; }
+    .sig-hint { font-style: italic; font-size: 9pt; }
 
     .red { color: #c00; font-weight: bold; }
   </style>
@@ -171,17 +170,17 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
         <td colspan="11" class="bx"><span style="white-space:nowrap">Bằng chữ :</span> <i>${s(pr.amount_words)}</i></td>
       </tr>
 
-      <!-- ===== HÌNH THỨC ===== -->
+      <!-- ===== HÌNH THỨC (KHÔNG kẻ gạch dưới) ===== -->
       <tr style="height:8mm">
-        <td colspan="11" class="bb" style="vertical-align:middle">
+        <td colspan="11" style="vertical-align:middle">
           <span style="white-space:nowrap">Hình thức thanh toán:</span>
-          <span style="display:inline-block; margin-left:32%">${s(payForm)} <span style="font-size:13pt">${cb(true)}</span></span>
+          <span style="display:inline-block; margin-left:32%">${s(payForm)} <span style="font-size:11pt">${cb(true)}</span></span>
         </td>
       </tr>
       <tr style="height:8mm">
-        <td colspan="11" class="bb" style="vertical-align:middle">
+        <td colspan="11" style="vertical-align:middle">
           <span style="white-space:nowrap">Hình thức nhận tiền:</span>
-          <span style="display:inline-block; margin-left:32%">${s(receiveForm)} <span style="font-size:13pt">${cb(true)}</span></span>
+          <span style="display:inline-block; margin-left:32%">${s(receiveForm)} <span style="font-size:11pt">${cb(true)}</span></span>
         </td>
       </tr>
 
@@ -189,7 +188,7 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Tên chủ tài khoản: ${s(pr.bank_account_name)}</td></tr>
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Số tài khoản người nhận: ${s(pr.bank_account_no)}${pr.bank_name ? html` — ${s(pr.bank_name)}` : ''}</td></tr>
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Nội dung CK: ${s(pr.transfer_note)}</td></tr>
-      <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Đi từ công ty:</td></tr>
+      <tr style="height:13mm"><td colspan="11" class="bb" style="vertical-align:top">Đi từ công ty:</td></tr>
 
       <!-- ===== CHỮ KÝ ===== -->
       <tr>
@@ -204,7 +203,7 @@ export function paymentPrintPage(pr: Row, items: Row[]): Html {
 
       <!-- ===== GHI CHÚ ===== -->
       <tr>
-        <td colspan="11" class="bt" style="font-size:10pt; font-style:italic">
+        <td colspan="11" class="bt" style="font-size:8.5pt; font-style:italic">
           <b><u>GHI CHÚ:</u></b> Cách đặt mã số đề nghị: <span class="red">XX01-DDMMYYYY</span>
         </td>
       </tr>

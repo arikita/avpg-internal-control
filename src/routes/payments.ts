@@ -17,16 +17,20 @@ import { paymentPrintPage } from '../web/payment-print';
 
 export const paymentRoutes = new Hono<AppEnv>();
 
-// Chuỗi chặng cố định. current_stage = chặng phiếu ĐANG ở (chờ bên đó ký).
-export const PR_STAGES = [
-  'Nhập',
-  'Trưởng bộ phận ký',
-  'KSNB ký',
-  'Kế toán ký',
-  'BOD ký',
-  'Đã thanh toán',
-] as const;
-const LAST_STAGE = PR_STAGES.length - 1; // 5 = Đã thanh toán
+// Chuỗi chặng. current_stage = chặng phiếu ĐANG ở (chờ bên đó ký).
+// Cặp chặng 2-3 (KSNB & Kế toán) ký theo thứ tự tuỳ thực tế: bên nào nhận hồ sơ
+// trước thì ký trước (mid_order = 'ksnb' | 'acct' ghi bên ký TRƯỚC, NULL = chưa chọn).
+export type MidOrder = 'ksnb' | 'acct' | null;
+export function prStages(midOrder: string | null | undefined): string[] {
+  const mid: [string, string] =
+    midOrder === 'ksnb'
+      ? ['KSNB ký', 'Kế toán ký']
+      : midOrder === 'acct'
+        ? ['Kế toán ký', 'KSNB ký']
+        : ['KSNB / Kế toán ký', 'Bên còn lại ký'];
+  return ['Nhập', 'Trưởng bộ phận ký', mid[0], mid[1], 'BOD ký', 'Đã thanh toán'];
+}
+const LAST_STAGE = 5; // Đã thanh toán
 
 // status suy từ current_stage (trừ 'cancelled' lưu thẳng DB).
 function stageStatus(stage: number): 'draft' | 'in_progress' | 'paid' {
@@ -51,6 +55,7 @@ type PrRow = {
   code: string | null;
   status: string;
   current_stage: number;
+  mid_order: string | null;
   creator_email: string;
   creator_name: string | null;
   dept_code: string;
@@ -97,20 +102,20 @@ paymentRoutes.use('*', async (c, next) => {
 });
 
 // Badge trạng thái cho danh sách.
-function prStatusBadge(status: string, stage: number): ReturnType<typeof html> {
+function prStatusBadge(status: string, stage: number, stages: string[]): ReturnType<typeof html> {
   if (status === 'cancelled')
     return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-600">Đã huỷ</span>`;
   if (status === 'paid')
     return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800">Đã thanh toán</span>`;
   if (status === 'draft')
     return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-700">Nháp</span>`;
-  return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Đang ở: ${esc(PR_STAGES[stage] ?? '?')}</span>`;
+  return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Đang ở: ${esc(stages[stage] ?? '?')}</span>`;
 }
 
 // Thanh stepper 6 chặng.
-function stepper(stage: number, cancelled: boolean): ReturnType<typeof html> {
+function stepper(stage: number, cancelled: boolean, stages: string[]): ReturnType<typeof html> {
   return html`<div class="flex flex-wrap items-center gap-1.5">
-    ${PR_STAGES.map((label, i) => {
+    ${stages.map((label, i) => {
       const done = !cancelled && i < stage;
       const current = !cancelled && i === stage;
       const cls = cancelled
@@ -150,7 +155,7 @@ paymentRoutes.get('/', async (c) => {
   const rows =
     (
       await c.env.DB.prepare(
-        `SELECT id, code, status, current_stage, creator_name, creator_email, dept_code,
+        `SELECT id, code, status, current_stage, mid_order, creator_name, creator_email, dept_code,
                 payee_name, purpose, total_amount, created_at
            FROM payment_request ${where}
           ORDER BY id DESC`,
@@ -231,8 +236,8 @@ function listBody(rows: PrRow[], f: { scope: string; st: string; q: string }) {
               </td>
               <td class="px-3 py-2 align-top text-right font-medium whitespace-nowrap">${money(r.total_amount)}</td>
               <td class="px-3 py-2 align-top text-slate-600 whitespace-nowrap">${esc(r.creator_name ?? r.creator_email)}</td>
-              <td class="px-3 py-2 align-top">${stepper(Number(r.current_stage), r.status === 'cancelled')}</td>
-              <td class="px-3 py-2 align-top text-center">${prStatusBadge(r.status, Number(r.current_stage))}</td>
+              <td class="px-3 py-2 align-top">${stepper(Number(r.current_stage), r.status === 'cancelled', prStages(r.mid_order))}</td>
+              <td class="px-3 py-2 align-top text-center">${prStatusBadge(r.status, Number(r.current_stage), prStages(r.mid_order))}</td>
             </tr>`,
             )}
           </tbody>
@@ -524,7 +529,7 @@ paymentRoutes.post('/', async (c) => {
     `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
      VALUES (?1, 0, ?2, 'create', ?3, ?4, ?5)`,
   )
-    .bind(id, PR_STAGES[0], user.email, user.name, 'Tạo phiếu')
+    .bind(id, prStages(null)[0], user.email, user.name, 'Tạo phiếu')
     .run();
   return c.redirect(`/payments/${id}`);
 });
@@ -628,9 +633,12 @@ function detailBody(
   log: Array<{ stage_index: number; stage_name: string; kind: string; actor_email: string; actor_name: string | null; note: string | null; acted_at: string }>,
 ) {
   const stage = Number(pr.current_stage);
+  const stages = prStages(pr.mid_order);
   const cancelled = pr.status === 'cancelled';
   const isCreator = pr.creator_email.toLowerCase() === user.email.toLowerCase();
   const canAdvance = !cancelled && stage < LAST_STAGE;
+  // Sau Trưởng bộ phận ký: hồ sơ đi KSNB hoặc Kế toán tuỳ bên nào nhận trước.
+  const pickMid = canAdvance && stage === 1;
   const nextStage = stage + 1;
 
   const kindLabel: Record<string, string> = {
@@ -660,11 +668,11 @@ function detailBody(
             <div class="text-2xl font-bold text-blue-900">${esc(pr.code ?? '(nháp)')}</div>
             <div class="text-xs text-slate-400 mt-0.5">Tạo bởi ${esc(pr.creator_name ?? pr.creator_email)} · ${vnDisplay(pr.created_at)}</div>
           </div>
-          <div>${prStatusBadge(pr.status, stage)}</div>
+          <div>${prStatusBadge(pr.status, stage, stages)}</div>
         </div>
 
         <!-- Stepper lớn -->
-        <div class="mb-5 p-3 bg-slate-50 rounded-lg">${stepper(stage, cancelled)}</div>
+        <div class="mb-5 p-3 bg-slate-50 rounded-lg">${stepper(stage, cancelled, stages)}</div>
 
         <div class="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <div><span class="text-slate-500">Người thanh toán:</span> <b>${esc(pr.payee_name)}</b></div>
@@ -728,9 +736,16 @@ function detailBody(
                     <label class="flex flex-col text-xs text-slate-500 gap-1">Ghi chú (ai đang giữ hồ sơ / tình trạng)
                       <input name="note" placeholder="vd: đã trình, đang ở bàn KSNB" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-80" />
                     </label>
-                    <button class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
-                      ✓ ${nextStage >= LAST_STAGE ? 'Đánh dấu Đã thanh toán' : `Đã xong "${esc(PR_STAGES[stage])}" → ${esc(PR_STAGES[nextStage])}`}
-                    </button>
+                    ${pickMid
+                      ? html`<button name="to" value="ksnb" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
+                            ✓ Đã xong "${esc(stages[stage])}" → KSNB ký
+                          </button>
+                          <button name="to" value="acct" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
+                            ✓ Đã xong "${esc(stages[stage])}" → Kế toán ký
+                          </button>`
+                      : html`<button class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
+                          ✓ ${nextStage >= LAST_STAGE ? 'Đánh dấu Đã thanh toán' : `Đã xong "${esc(stages[stage])}" → ${esc(stages[nextStage])}`}
+                        </button>`}
                   </form>`
                 : html`<div class="text-sm text-emerald-700 font-medium">✓ Hồ sơ đã hoàn tất (Đã thanh toán).</div>`}
             </div>
@@ -772,9 +787,9 @@ function detailBody(
 
 // ============================ CHUYỂN / LÙI / GHI CHÚ / HUỶ ============================
 async function loadForAction(c: Context<AppEnv>, id: number) {
-  const pr = await c.env.DB.prepare(`SELECT id, status, current_stage, creator_email FROM payment_request WHERE id = ?1`)
+  const pr = await c.env.DB.prepare(`SELECT id, status, current_stage, mid_order, creator_email FROM payment_request WHERE id = ?1`)
     .bind(id)
-    .first<{ id: number; status: string; current_stage: number; creator_email: string }>();
+    .first<{ id: number; status: string; current_stage: number; mid_order: string | null; creator_email: string }>();
   if (!pr) throw notFound('Phiếu không tồn tại');
   if (pr.status === 'cancelled') throw unprocessable('Phiếu đã huỷ.');
   return pr;
@@ -788,16 +803,24 @@ paymentRoutes.post('/:id{[0-9]+}/advance', async (c) => {
   const next = pr.current_stage + 1;
   const b = await c.req.parseBody();
   const note = String(b.note ?? '').trim();
+  // Rời chặng Trưởng bộ phận: phải chọn hồ sơ đi KSNB hay Kế toán trước.
+  let midOrder = pr.mid_order;
+  if (pr.current_stage === 1) {
+    const to = String(b.to ?? '');
+    if (to !== 'ksnb' && to !== 'acct') throw badRequest('Chọn chuyển KSNB hay Kế toán trước.');
+    midOrder = to;
+  }
+  const stages = prStages(midOrder);
   await c.env.DB.prepare(
-    `UPDATE payment_request SET current_stage=?2, status=?3, updated_at=iso_now() WHERE id=?1`,
+    `UPDATE payment_request SET current_stage=?2, status=?3, mid_order=?4, updated_at=iso_now() WHERE id=?1`,
   )
-    .bind(id, next, stageStatus(next))
+    .bind(id, next, stageStatus(next), midOrder)
     .run();
   await c.env.DB.prepare(
     `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
      VALUES (?1,?2,?3,'advance',?4,?5,?6)`,
   )
-    .bind(id, next, PR_STAGES[next], user.email, user.name, note || null)
+    .bind(id, next, stages[next], user.email, user.name, note || null)
     .run();
   const ctx = await webAuditContext(c);
   await logAudit(c.env, {
@@ -806,7 +829,7 @@ paymentRoutes.post('/:id{[0-9]+}/advance', async (c) => {
     actorName: user.name,
     actorUserId: user.id,
     proposalId: id,
-    step: PR_STAGES[next],
+    step: stages[next],
     action: 'advance',
     channel: 'web',
     ip: ctx.ip,
@@ -823,16 +846,19 @@ paymentRoutes.post('/:id{[0-9]+}/revert', async (c) => {
   const pr = await loadForAction(c, id);
   if (pr.current_stage <= 0) throw unprocessable('Phiếu đang ở chặng đầu.');
   const prev = pr.current_stage - 1;
+  // Lùi về trước cặp KSNB/Kế toán → bỏ lựa chọn thứ tự, lần chuyển sau chọn lại.
+  const midOrder = prev <= 1 ? null : pr.mid_order;
+  const stages = prStages(midOrder);
   await c.env.DB.prepare(
-    `UPDATE payment_request SET current_stage=?2, status=?3, updated_at=iso_now() WHERE id=?1`,
+    `UPDATE payment_request SET current_stage=?2, status=?3, mid_order=?4, updated_at=iso_now() WHERE id=?1`,
   )
-    .bind(id, prev, stageStatus(prev))
+    .bind(id, prev, stageStatus(prev), midOrder)
     .run();
   await c.env.DB.prepare(
     `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
      VALUES (?1,?2,?3,'revert',?4,?5,?6)`,
   )
-    .bind(id, prev, PR_STAGES[prev], user.email, user.name, 'Lùi chặng')
+    .bind(id, prev, stages[prev], user.email, user.name, 'Lùi chặng')
     .run();
   return c.redirect(`/payments/${id}`);
 });
@@ -848,7 +874,7 @@ paymentRoutes.post('/:id{[0-9]+}/note', async (c) => {
     `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
      VALUES (?1,?2,?3,'note',?4,?5,?6)`,
   )
-    .bind(id, pr.current_stage, PR_STAGES[pr.current_stage], user.email, user.name, note)
+    .bind(id, pr.current_stage, prStages(pr.mid_order)[pr.current_stage], user.email, user.name, note)
     .run();
   return c.redirect(`/payments/${id}`);
 });
@@ -866,7 +892,7 @@ paymentRoutes.post('/:id{[0-9]+}/cancel', async (c) => {
     `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
      VALUES (?1,?2,?3,'cancel',?4,?5,'Huỷ phiếu')`,
   )
-    .bind(id, pr.current_stage, PR_STAGES[pr.current_stage], user.email, user.name)
+    .bind(id, pr.current_stage, prStages(pr.mid_order)[pr.current_stage], user.email, user.name)
     .run();
   return c.redirect(`/payments/${id}`);
 });

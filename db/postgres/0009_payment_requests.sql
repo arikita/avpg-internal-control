@@ -1,8 +1,9 @@
 -- Đợt 1 — GIẤY ĐỀ NGHỊ THANH TOÁN (DNTT), mẫu AVPG-AC-P1-F1.
 -- Giai đoạn này CHƯA có duyệt điện tử: người dùng tạo phiếu từ template → in ra giấy
 -- → đi trình ký TAY. Hệ thống chỉ bám vết hồ sơ giấy đang nằm ở chặng nào.
--- Chuỗi chặng cố định (current_stage 0..5):
---   0 Nhập → 1 Trưởng bộ phận ký → 2 KSNB ký → 3 Kế toán ký → 4 BOD ký → 5 Đã thanh toán
+-- Chuỗi chặng (current_stage 0..5):
+--   0 Nhập → 1 Trưởng bộ phận ký → 2-3 KSNB & Kế toán ký (thứ tự tuỳ thực tế,
+--   xem mid_order ở 0010) → 4 BOD ký → 5 Đã thanh toán
 
 -- Bộ đếm mã DNTT riêng (tách khỏi proposal_counters để số phiếu không lẫn với Đề Xuất).
 CREATE TABLE IF NOT EXISTS payment_counters (

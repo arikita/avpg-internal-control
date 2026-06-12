@@ -251,7 +251,7 @@ function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }
               </td>
               <td class="px-3 py-2 align-top">
                 <div class="font-medium text-slate-700">${esc(r.payee_name ?? '—')}</div>
-                <div class="text-xs text-slate-500 line-clamp-1">${esc(r.purpose ?? '')}</div>
+                <div class="text-xs text-slate-500 break-words">${esc(r.purpose ?? '')}</div>
               </td>
               <td class="px-3 py-2 align-top text-right font-medium whitespace-nowrap">${money(r.total_amount)}</td>
               <td class="px-3 py-2 align-top text-slate-600 whitespace-nowrap">${esc(r.creator_name ?? r.creator_email)}</td>

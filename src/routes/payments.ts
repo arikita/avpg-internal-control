@@ -75,6 +75,13 @@ type PrRow = {
   updated_at: string;
 };
 
+// Dòng danh sách theo dõi = header phiếu + ghi chú trình ký mới nhất (từ stage_log).
+type PrListRow = PrRow & {
+  last_note: string | null;
+  last_note_by: string | null;
+  last_note_at: string | null;
+};
+
 type PrItem = {
   seq: number;
   description: string | null;
@@ -152,16 +159,27 @@ paymentRoutes.get('/', async (c) => {
     params.push(`%${q.toLowerCase()}%`);
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  // Ghi chú trình ký mới nhất (ai đang giữ hồ sơ / tình trạng) cho cột Ghi chú.
+  // Chỉ lấy kind advance/note — là 2 kind có ghi chú người dùng nhập tay;
+  // create/revert/cancel chèn note tự động ('Tạo phiếu'...) không có giá trị theo dõi.
+  const lastNote = (expr: string) =>
+    `(SELECT ${expr} FROM payment_request_stage_log l
+       WHERE l.pr_id = payment_request.id AND l.kind IN ('advance','note')
+         AND l.note IS NOT NULL AND l.note <> ''
+       ORDER BY l.id DESC LIMIT 1)`;
   const rows =
     (
       await c.env.DB.prepare(
         `SELECT id, code, status, current_stage, mid_order, creator_name, creator_email, dept_code,
-                payee_name, purpose, total_amount, created_at
+                payee_name, purpose, total_amount, created_at,
+                ${lastNote('l.note')} AS last_note,
+                ${lastNote('COALESCE(l.actor_name, l.actor_email)')} AS last_note_by,
+                ${lastNote('l.acted_at')} AS last_note_at
            FROM payment_request ${where}
           ORDER BY id DESC`,
       )
         .bind(...params)
-        .all<PrRow>()
+        .all<PrListRow>()
     ).results ?? [];
 
   return c.html(
@@ -174,7 +192,7 @@ paymentRoutes.get('/', async (c) => {
   );
 });
 
-function listBody(rows: PrRow[], f: { scope: string; st: string; q: string }) {
+function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }) {
   const qs = (patch: Record<string, string>) => {
     const u = new URLSearchParams();
     const merged = { scope: f.scope, st: f.st, q: f.q, ...patch };
@@ -220,7 +238,8 @@ function listBody(rows: PrRow[], f: { scope: string; st: string; q: string }) {
               <th class="text-left px-3 py-2">Người nhận / Mục đích</th>
               <th class="text-right px-3 py-2">Số tiền</th>
               <th class="text-left px-3 py-2">Người tạo</th>
-              <th class="text-left px-3 py-2 w-[34%]">Tiến độ trình ký</th>
+              <th class="text-left px-3 py-2 w-[28%]">Tiến độ trình ký</th>
+              <th class="text-left px-3 py-2 w-[16%]">Ghi chú</th>
               <th class="text-center px-3 py-2"></th>
             </tr>
           </thead>
@@ -237,10 +256,23 @@ function listBody(rows: PrRow[], f: { scope: string; st: string; q: string }) {
               <td class="px-3 py-2 align-top text-right font-medium whitespace-nowrap">${money(r.total_amount)}</td>
               <td class="px-3 py-2 align-top text-slate-600 whitespace-nowrap">${esc(r.creator_name ?? r.creator_email)}</td>
               <td class="px-3 py-2 align-top">${stepper(Number(r.current_stage), r.status === 'cancelled', prStages(r.mid_order))}</td>
+              <td class="px-3 py-2 align-top">
+                ${r.last_note
+                  ? html`<div class="text-xs text-slate-600 line-clamp-2" title="${esc(r.last_note)}">${esc(r.last_note)}</div>
+                      <div class="text-[11px] text-slate-400 mt-0.5">${esc(r.last_note_by ?? '')}${r.last_note_at ? ` · ${vnDisplay(r.last_note_at)}` : ''}</div>`
+                  : html`<span class="text-xs text-slate-300">—</span>`}
+              </td>
               <td class="px-3 py-2 align-top text-center">${prStatusBadge(r.status, Number(r.current_stage), prStages(r.mid_order))}</td>
             </tr>`,
             )}
           </tbody>
+          <tfoot>
+            <tr class="border-t border-slate-200 bg-slate-50">
+              <td colspan="2" class="px-3 py-2 text-right font-medium text-slate-600">Tổng tiền</td>
+              <td class="px-3 py-2 text-right font-bold text-blue-900 whitespace-nowrap">${money(rows.reduce((s, r) => s + Number(r.total_amount ?? 0), 0))}</td>
+              <td colspan="4"></td>
+            </tr>
+          </tfoot>
         </table>
       </div>`}
     <p class="text-xs text-slate-400 mt-3">${String(rows.length)} phiếu · nhấn <b>mã phiếu</b> để xem chi tiết, in và cập nhật chặng trình ký.</p>`;

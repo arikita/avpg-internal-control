@@ -7,7 +7,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { prStages } from './payments';
-import { downloadDocumentPdf, verifyWebhookSignature } from '../lib/documenso';
+import { downloadDocumentPdf, verifyWebhookSecret } from '../lib/documenso';
 import { logAudit } from '../lib/audit';
 import { nowIso } from '../lib/time';
 
@@ -40,11 +40,11 @@ function computeStage(signedPreBod: number): number {
 
 documensoRoutes.post('/webhook', async (c) => {
   const raw = await c.req.text();
-  const sig = c.req.header('x-documenso-signature') ?? c.req.header('X-Documenso-Signature') ?? null;
-  const ok = await verifyWebhookSignature(c.env.DOCUMENSO_WEBHOOK_SECRET, raw, sig);
+  const secretHeader = c.req.header('x-documenso-secret') ?? null;
+  const ok = verifyWebhookSecret(c.env.DOCUMENSO_WEBHOOK_SECRET, secretHeader);
   if (!ok) {
-    console.warn('[documenso-webhook] chữ ký không hợp lệ');
-    return c.json({ ok: false, error: 'bad signature' }, 401);
+    console.warn('[documenso-webhook] secret không khớp');
+    return c.json({ ok: false, error: 'bad secret' }, 401);
   }
   if (!c.env.DOCUMENSO_WEBHOOK_SECRET) {
     console.warn('[documenso-webhook] CHƯA cấu hình DOCUMENSO_WEBHOOK_SECRET — bỏ qua xác thực');

@@ -148,28 +148,16 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-// Xác minh chữ ký webhook (HMAC-SHA256 hex của raw body bằng webhook secret).
-// Header Documenso: X-Documenso-Signature. Trả true nếu khớp hoặc chưa cấu hình secret.
-export async function verifyWebhookSignature(
+// Xác thực webhook Documenso. Bản community KHÔNG ký HMAC — nó gửi secret THẲNG qua
+// header `X-Documenso-Secret` (xem execute-webhook-call.ts). So bằng (timing-safe).
+// Trả true nếu khớp hoặc chưa cấu hình secret.
+export function verifyWebhookSecret(
   secret: string | undefined,
-  rawBody: string,
-  signatureHeader: string | null,
-): Promise<boolean> {
+  headerValue: string | null,
+): boolean {
   if (!secret) return true; // chưa cấu hình → không chặn (log ở caller)
-  if (!signatureHeader) return false;
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawBody));
-  const hex = Array.from(new Uint8Array(sigBuf))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  const got = signatureHeader.trim().toLowerCase().replace(/^sha256=/, '');
-  return timingSafeEqual(hex, got);
+  if (!headerValue) return false;
+  return timingSafeEqual(secret, headerValue);
 }
 
 function timingSafeEqual(a: string, b: string): boolean {

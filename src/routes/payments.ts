@@ -1123,9 +1123,12 @@ paymentRoutes.post('/:id{[0-9]+}/send-sign', async (c) => {
     signers: dsSigners,
   });
 
-  // 3) Lưu map recipient → role/chặng (match recipient_id theo email).
+  // 3) Lưu map recipient → role/chặng. Match recipient_id theo signingOrder (DUY NHẤT 1-4)
+  //    để không nhầm khi 1 người kiêm nhiều vai (trùng email). Fallback theo email nếu thiếu.
   for (const s of signersInput) {
-    const rec = created.recipients.find((r) => (r.email ?? '').toLowerCase() === s.email.toLowerCase());
+    const rec =
+      created.recipients.find((r) => r.signingOrder === s.order) ??
+      created.recipients.find((r) => (r.email ?? '').toLowerCase() === s.email.toLowerCase());
     await c.env.DB.prepare(
       `INSERT INTO payment_request_signer (pr_id, role, stage_index, recipient_id, email, name)
        VALUES (?1,?2,?3,?4,?5,?6)`,

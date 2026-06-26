@@ -99,11 +99,32 @@ export async function createSignedDocument(
   };
   const documentId = data.documentId ?? data.id;
   if (!documentId || !data.envelopeId) throw new Error(`Documenso create thiếu id/envelopeId: ${JSON.stringify(data).slice(0, 300)}`);
-  return {
-    documentId,
-    envelopeId: data.envelopeId,
-    recipients: data.recipients ?? [],
-  };
+  // Response create KHÔNG luôn trả recipients id → GET document để lấy id thật (cần để
+  // webhook match đúng người, nhất là khi 1 người KIÊM nhiều vai = trùng email).
+  let recipients = data.recipients ?? [];
+  if (!recipients.length) {
+    recipients = await getDocumentRecipients(env, documentId).catch(() => []);
+  }
+  return { documentId, envelopeId: data.envelopeId, recipients };
+}
+
+// Lấy recipients (id + email + signingOrder) của 1 document.
+export async function getDocumentRecipients(
+  env: Bindings,
+  documentId: number,
+): Promise<Array<{ id: number; email: string; signingOrder: number }>> {
+  const res = await fetch(`${base(env)}/api/v2/document/${documentId}`, {
+    method: 'GET',
+    headers: authHeaders(env),
+  });
+  if (!res.ok) throw await asError(res);
+  const d = (await res.json()) as Record<string, unknown>;
+  const raw = (d.recipients ?? (d.document as Record<string, unknown> | undefined)?.recipients ?? []) as Array<{
+    id: number;
+    email: string;
+    signingOrder: number;
+  }>;
+  return raw.map((r) => ({ id: r.id, email: r.email, signingOrder: r.signingOrder }));
 }
 
 // Gửi mail mời ký (sau create). Idempotent phía Documenso theo trạng thái document.

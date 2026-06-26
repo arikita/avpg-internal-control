@@ -735,7 +735,7 @@ function sendSignCard(pr: PrRow, prefill: SignPrefill | null) {
   </div>`;
   return html`<div class="bg-blue-50/60 rounded-xl ring-1 ring-blue-200 p-5 space-y-3">
     <div class="text-sm font-semibold text-blue-900">✍️ Gửi ký điện tử (Documenso)</div>
-    <p class="text-xs text-slate-500 -mt-1">Mỗi người sẽ nhận email mời ký, đăng nhập M365 để ký. Thứ tự: Trưởng bộ phận → (KSNB &amp; Kế toán, bên nào trước cũng được) → BOD.</p>
+    <p class="text-xs text-slate-500 -mt-1">Mỗi người nhận email mời ký theo thứ tự: <b>Trưởng bộ phận → KSNB → Kế toán → BOD</b> (ký điện tử bắt buộc tuần tự — người trước ký xong người sau mới tới lượt).</p>
     <form method="post" action="/payments/${String(pr.id)}/send-sign" class="space-y-2"
       onsubmit="return confirm('Gửi phiếu đi ký điện tử? Sau khi gửi sẽ không sửa nội dung được nữa.')">
       ${row('manager', 'Trưởng bộ phận', prefill?.manager ?? null)}
@@ -1076,12 +1076,14 @@ paymentRoutes.post('/:id{[0-9]+}/send-sign', async (c) => {
   if (pr.documenso_envelope_id) throw unprocessable('Phiếu đã gửi ký điện tử.');
 
   const b = await c.req.parseBody();
-  // role → signingOrder + chặng danh nghĩa (KSNB/Kế toán cùng order 2 = ký song song).
+  // role → signingOrder + chặng. Cert PAdES/TSP của Documenso ÉP ký SEQUENTIAL nghiêm ngặt
+  // (PARALLEL bị coerce → SEQUENTIAL khi gửi) ⇒ KHÔNG ký song song được ⇒ mỗi người 1 order
+  // RIÊNG, thứ tự cố định: Trưởng BP(1) → KSNB(2) → Kế toán(3) → BOD(4).
   const roleDefs = [
     { role: 'manager' as const, order: 1, stage: 1 },
     { role: 'ksnb' as const, order: 2, stage: 2 },
-    { role: 'acct' as const, order: 2, stage: 3 },
-    { role: 'bod' as const, order: 3, stage: 4 },
+    { role: 'acct' as const, order: 3, stage: 3 },
+    { role: 'bod' as const, order: 4, stage: 4 },
   ];
   const signersInput = roleDefs.map((r) => ({
     ...r,
@@ -1133,9 +1135,11 @@ paymentRoutes.post('/:id{[0-9]+}/send-sign', async (c) => {
   }
 
   // 4) Gắn envelope vào phiếu + chuyển sang chặng "Trưởng bộ phận ký".
+  // mid_order='ksnb' vì ký điện tử theo thứ tự cố định KSNB→Kế toán (nhãn chặng khớp ngay).
   await c.env.DB.prepare(
     `UPDATE payment_request SET documenso_document_id=?2, documenso_envelope_id=?3,
-       documenso_status='PENDING', sign_sent_at=?4, current_stage=1, status='in_progress', updated_at=iso_now()
+       documenso_status='PENDING', sign_sent_at=?4, current_stage=1, status='in_progress',
+       mid_order='ksnb', updated_at=iso_now()
      WHERE id=?1`,
   )
     .bind(id, created.documentId, created.envelopeId, nowIso())

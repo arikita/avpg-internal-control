@@ -16,7 +16,7 @@ export async function renderPaymentPdf(
   items: Record<string, unknown>[],
   sig?: { proposerName?: string; managerName?: string },
 ): Promise<Uint8Array> {
-  const htmlStr = String(await paymentPrintPage(pr, items, sig));
+  const htmlStr = String(await paymentPrintPage(pr, items, { ...sig, forSign: true }));
   const form = new FormData();
   // Gotenberg yêu cầu file chính tên index.html.
   form.append('files', new Blob([htmlStr], { type: 'text/html' }), 'index.html');
@@ -35,4 +35,14 @@ export async function renderPaymentPdf(
     throw new Error(`Gotenberg ${res.status}: ${t.slice(0, 400)}`);
   }
   return new Uint8Array(await res.arrayBuffer());
+}
+
+// Đếm số trang PDF (để đặt ô chữ ký vào TRANG CUỐI — khối chữ ký nằm ở trang riêng cuối).
+// Ưu tiên đếm object /Type /Page; fallback /Count lớn nhất trong cây /Pages.
+export function countPdfPages(bytes: Uint8Array): number {
+  const t = new TextDecoder('latin1').decode(bytes);
+  const byType = (t.match(/\/Type\s*\/Page(?![s])/g) || []).length;
+  if (byType > 0) return byType;
+  const counts = [...t.matchAll(/\/Count\s+(\d+)/g)].map((m) => Number(m[1]));
+  return counts.length ? Math.max(...counts) : 1;
 }

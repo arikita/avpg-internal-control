@@ -21,7 +21,7 @@ import {
   documensoConfigured,
   type DocumensoSigner,
 } from '../lib/documenso';
-import { pdfRenderConfigured, renderPaymentPdf } from '../lib/payment-pdf';
+import { countPdfPages, pdfRenderConfigured, renderPaymentPdf } from '../lib/payment-pdf';
 
 export const paymentRoutes = new Hono<AppEnv>();
 
@@ -40,17 +40,16 @@ export function prStages(midOrder: string | null | undefined): string[] {
 }
 const LAST_STAGE = 5; // Đã thanh toán
 
-// Toạ độ ô CHỮ KÝ trên bản in (đơn vị %, gốc top-left). Mẫu AVPG-AC-P1-F1 có 5 ô:
-// [Người lập | Trưởng bộ phận | KSNB | Kế toán | BOD]. Chỉ 4 ô sau cần ký điện tử.
-// CĂN từ PDF thật (đo bbox): hàng nhãn ký ~57.6%, "(Ký Họ tên)" ~58.9%, tên in ~68.9% →
-// vùng ký ~60-67%. Cột (5 cột đều): TrưởngBP 32.5%, KSNB 50.1%, Kếtoán 67.7%, BOD 85.3%.
-// ⚠️ pageY căn cho phiếu ~1 dòng bảng kê; bảng kê DÀI sẽ xô khối ký xuống → cần ghim vị trí
-// cố định ở bản PDF ký (TODO) nếu dùng phiếu nhiều dòng. Trang 1 (DNTT thường 1 trang).
-const SIGN_FIELD_POS: Record<'manager' | 'ksnb' | 'acct' | 'bod', { pageNumber: number; pageX: number; pageY: number; width: number; height: number }> = {
-  manager: { pageNumber: 1, pageX: 26.0, pageY: 60, width: 13, height: 7 },
-  ksnb: { pageNumber: 1, pageX: 43.6, pageY: 60, width: 13, height: 7 },
-  acct: { pageNumber: 1, pageX: 61.2, pageY: 60, width: 13, height: 7 },
-  bod: { pageNumber: 1, pageX: 78.8, pageY: 60, width: 13, height: 7 },
+// Toạ độ ô CHỮ KÝ trên bản PDF ký (đơn vị %, gốc top-left). Bản ký (forSign) đưa khối chữ ký
+// sang HẲN TRANG CUỐI riêng → vị trí CỐ ĐỊNH bất kể bảng kê dài/ngắn. Đo bbox PDF render thật
+// (Gotenberg): trên trang ký nhãn ~12%, "(Ký Họ tên)" ~13.3%, tên in ~23% → vùng ký ~15-22%.
+// Cột (5 cột đều, chỉ 4 cột sau ký đ.tử): TrưởngBP 32.5%, KSNB 50.1%, Kếtoán 67.7%, BOD 85.3%
+// → pageX = tâm − nửa width(13%). pageNumber gán ĐỘNG = trang cuối (tính lúc gửi ký).
+const SIGN_FIELD_POS: Record<'manager' | 'ksnb' | 'acct' | 'bod', { pageX: number; pageY: number; width: number; height: number }> = {
+  manager: { pageX: 26.0, pageY: 15, width: 13, height: 6 },
+  ksnb: { pageX: 43.6, pageY: 15, width: 13, height: 6 },
+  acct: { pageX: 61.2, pageY: 15, width: 13, height: 6 },
+  bod: { pageX: 78.8, pageY: 15, width: 13, height: 6 },
 };
 
 // Ký điện tử khả dụng khi đã cấu hình Documenso + Gotenberg.
@@ -1112,11 +1111,13 @@ paymentRoutes.post('/:id{[0-9]+}/send-sign', async (c) => {
     items,
     { proposerName: pr.creator_name ?? '', managerName: signersInput[0]?.name ?? '' },
   );
+  // Khối chữ ký ở TRANG CUỐI → đặt ô ký vào đúng trang cuối (số trang tuỳ độ dài bảng kê).
+  const lastPage = countPdfPages(pdf);
   const dsSigners: DocumensoSigner[] = signersInput.map((s) => ({
     email: s.email,
     name: s.name || s.email,
     signingOrder: s.order,
-    field: SIGN_FIELD_POS[s.role],
+    field: { pageNumber: lastPage, ...SIGN_FIELD_POS[s.role] },
   }));
   const created = await createSignedDocument(c.env, {
     title: pr.code ?? `DNTT-${id}`,

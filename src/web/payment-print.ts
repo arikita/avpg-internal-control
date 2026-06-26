@@ -29,8 +29,12 @@ function ngayThangNam(iso: string): string {
 export function paymentPrintPage(
   pr: Row,
   items: Row[],
-  sig?: { proposerName?: string; managerName?: string },
+  sig?: { proposerName?: string; managerName?: string; forSign?: boolean },
 ): Html {
+  // forSign=true (bản PDF gửi ký Documenso): GHIM khối chữ ký cố định ở ĐÁY trang
+  // (position:fixed) để ô ký luôn ở 1 vị trí dù bảng kê dài/ngắn. Bản in giấy (forSign
+  // false) giữ khối chữ ký trong luồng bảng như cũ — KHÔNG đụng layout đã căn.
+  const forSign = sig?.forSign === true;
   const code = (pr.code as string) ?? '';
   const dateStr = ngayThangNam((pr.created_at as string) ?? '');
   const payForm = s(pr.pay_form) || 'Công ty';
@@ -48,6 +52,11 @@ export function paymentPrintPage(
     { role: 'Kế toán', name: '' },
     { role: 'Ban Giám đốc', name: '' },
   ];
+  const sigTable = html`<table class="sig">
+            <tr>${SIGS.map((x) => html`<td class="sig-role">${x.role}</td>`)}</tr>
+            <tr>${SIGS.map(() => html`<td class="sig-hint">(Ký, Họ và tên)</td>`)}</tr>
+            <tr>${SIGS.map((x) => html`<td style="height:30mm; vertical-align:bottom; font-weight:bold">${x.name}</td>`)}</tr>
+          </table>`;
 
   return html`<!doctype html>
 <html lang="vi">
@@ -91,6 +100,9 @@ export function paymentPrintPage(
     table.sig td { text-align: center; vertical-align: top; width: 20%; padding: 0 1mm; }
     .sig-role { font-weight: bold; font-size: 9.5pt; }
     .sig-hint { font-style: italic; font-size: 8.5pt; }
+    /* Bản PDF ký: khối chữ ký sang HẲN trang riêng (cuối) → vị trí ô ký luôn cố định,
+       không bị bảng kê dài/ngắn xô lệch hay đè lên. */
+    .sig-page { break-before: page; padding-top: 22mm; }
 
     .red { color: #c00; font-weight: bold; }
   </style>
@@ -201,16 +213,10 @@ export function paymentPrintPage(
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Nội dung CK: ${s(pr.transfer_note)}</td></tr>
       <tr style="height:13mm"><td colspan="11" class="bb" style="vertical-align:top">Đi từ công ty:</td></tr>
 
-      <!-- ===== CHỮ KÝ ===== -->
-      <tr>
-        <td colspan="11" style="padding-top:2mm">
-          <table class="sig">
-            <tr>${SIGS.map((x) => html`<td class="sig-role">${x.role}</td>`)}</tr>
-            <tr>${SIGS.map(() => html`<td class="sig-hint">(Ký, Họ và tên)</td>`)}</tr>
-            <tr>${SIGS.map((x) => html`<td style="height:30mm; vertical-align:bottom; font-weight:bold">${x.name}</td>`)}</tr>
-          </table>
-        </td>
-      </tr>
+      <!-- ===== CHỮ KÝ (bản in giấy: trong luồng bảng) ===== -->
+      ${forSign ? '' : html`<tr>
+        <td colspan="11" style="padding-top:2mm">${sigTable}</td>
+      </tr>`}
 
       <!-- ===== GHI CHÚ ===== -->
       <tr>
@@ -219,6 +225,8 @@ export function paymentPrintPage(
         </td>
       </tr>
     </table>
+    <!-- ===== CHỮ KÝ (bản PDF ký: trang riêng cuối) ===== -->
+    ${forSign ? html`<div class="sig-page">${sigTable}</div>` : ''}
   </div>
 </body>
 </html>`;

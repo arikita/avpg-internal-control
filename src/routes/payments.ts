@@ -40,15 +40,17 @@ export function prStages(midOrder: string | null | undefined): string[] {
 }
 const LAST_STAGE = 5; // Đã thanh toán
 
-// Toạ độ ô CHỮ KÝ trên bản in (đơn vị %, trang 1). Mẫu AVPG-AC-P1-F1 có 5 ô:
+// Toạ độ ô CHỮ KÝ trên bản in (đơn vị %, gốc top-left). Mẫu AVPG-AC-P1-F1 có 5 ô:
 // [Người lập | Trưởng bộ phận | KSNB | Kế toán | BOD]. Chỉ 4 ô sau cần ký điện tử.
-// ⚠️ Số liệu dưới là ƯỚC LƯỢNG — phải CHỈNH lại bằng mắt trên Documenso UI sau lần render PDF
-// thật đầu tiên (bảng kê dài có thể xô sang trang 2 → cần đổi pageNumber). Xem docs/.
+// CĂN từ PDF thật (đo bbox): hàng nhãn ký ~57.6%, "(Ký Họ tên)" ~58.9%, tên in ~68.9% →
+// vùng ký ~60-67%. Cột (5 cột đều): TrưởngBP 32.5%, KSNB 50.1%, Kếtoán 67.7%, BOD 85.3%.
+// ⚠️ pageY căn cho phiếu ~1 dòng bảng kê; bảng kê DÀI sẽ xô khối ký xuống → cần ghim vị trí
+// cố định ở bản PDF ký (TODO) nếu dùng phiếu nhiều dòng. Trang 1 (DNTT thường 1 trang).
 const SIGN_FIELD_POS: Record<'manager' | 'ksnb' | 'acct' | 'bod', { pageNumber: number; pageX: number; pageY: number; width: number; height: number }> = {
-  manager: { pageNumber: 1, pageX: 20.6, pageY: 84, width: 16, height: 10 },
-  ksnb: { pageNumber: 1, pageX: 40.2, pageY: 84, width: 16, height: 10 },
-  acct: { pageNumber: 1, pageX: 59.8, pageY: 84, width: 16, height: 10 },
-  bod: { pageNumber: 1, pageX: 79.4, pageY: 84, width: 16, height: 10 },
+  manager: { pageNumber: 1, pageX: 26.0, pageY: 60, width: 13, height: 7 },
+  ksnb: { pageNumber: 1, pageX: 43.6, pageY: 60, width: 13, height: 7 },
+  acct: { pageNumber: 1, pageX: 61.2, pageY: 60, width: 13, height: 7 },
+  bod: { pageNumber: 1, pageX: 78.8, pageY: 60, width: 13, height: 7 },
 };
 
 // Ký điện tử khả dụng khi đã cấu hình Documenso + Gotenberg.

@@ -14,6 +14,14 @@ import { nextPaymentCode } from '../lib/codes';
 import { readVndWords } from '../lib/num-to-words-vi';
 import { logAudit, webAuditContext } from '../lib/audit';
 import { paymentPrintPage } from '../web/payment-print';
+import { getDeptManager, getActiveBod, getActiveIc, type Approver } from '../lib/routing';
+import {
+  createSignedDocument,
+  distributeDocument,
+  documensoConfigured,
+  type DocumensoSigner,
+} from '../lib/documenso';
+import { pdfRenderConfigured, renderPaymentPdf } from '../lib/payment-pdf';
 
 export const paymentRoutes = new Hono<AppEnv>();
 
@@ -31,6 +39,22 @@ export function prStages(midOrder: string | null | undefined): string[] {
   return ['Nhập', 'Trưởng bộ phận ký', mid[0], mid[1], 'BOD ký', 'Đã thanh toán'];
 }
 const LAST_STAGE = 5; // Đã thanh toán
+
+// Toạ độ ô CHỮ KÝ trên bản in (đơn vị %, trang 1). Mẫu AVPG-AC-P1-F1 có 5 ô:
+// [Người lập | Trưởng bộ phận | KSNB | Kế toán | BOD]. Chỉ 4 ô sau cần ký điện tử.
+// ⚠️ Số liệu dưới là ƯỚC LƯỢNG — phải CHỈNH lại bằng mắt trên Documenso UI sau lần render PDF
+// thật đầu tiên (bảng kê dài có thể xô sang trang 2 → cần đổi pageNumber). Xem docs/.
+const SIGN_FIELD_POS: Record<'manager' | 'ksnb' | 'acct' | 'bod', { pageNumber: number; pageX: number; pageY: number; width: number; height: number }> = {
+  manager: { pageNumber: 1, pageX: 20.6, pageY: 84, width: 16, height: 10 },
+  ksnb: { pageNumber: 1, pageX: 40.2, pageY: 84, width: 16, height: 10 },
+  acct: { pageNumber: 1, pageX: 59.8, pageY: 84, width: 16, height: 10 },
+  bod: { pageNumber: 1, pageX: 79.4, pageY: 84, width: 16, height: 10 },
+};
+
+// Ký điện tử khả dụng khi đã cấu hình Documenso + Gotenberg.
+function eSignAvailable(env: AppEnv['Bindings']): boolean {
+  return documensoConfigured(env) && pdfRenderConfigured(env);
+}
 
 // status suy từ current_stage (trừ 'cancelled' lưu thẳng DB).
 function stageStatus(stage: number): 'draft' | 'in_progress' | 'paid' {
@@ -73,6 +97,14 @@ type PrRow = {
   note: string | null;
   created_at: string;
   updated_at: string;
+  // Documenso (ký điện tử) — null khi phiếu theo luồng giấy.
+  documenso_document_id?: number | null;
+  documenso_envelope_id?: string | null;
+  documenso_status?: string | null;
+  signed_pdf_key?: string | null;
+  signed_pdf_sha256?: string | null;
+  sign_sent_at?: string | null;
+  signed_completed_at?: string | null;
 };
 
 // Dòng danh sách theo dõi = header phiếu + ghi chú trình ký mới nhất (từ stage_log).
@@ -653,23 +685,91 @@ paymentRoutes.get('/:id{[0-9]+}', async (c) => {
         .bind(id)
         .all<{ stage_index: number; stage_name: string; kind: string; actor_email: string; actor_name: string | null; note: string | null; acted_at: string }>()
     ).results ?? [];
-  return c.html(page({ title: pr.code ?? 'Đề nghị TT', user, body: detailBody(user, pr, items, log) }));
+
+  // Người ký Documenso (nếu đã gửi ký) — để hiển thị trạng thái từng người.
+  const signers =
+    (
+      await c.env.DB.prepare(
+        `SELECT role, email, name, signed_at FROM payment_request_signer WHERE pr_id = ?1 ORDER BY id ASC`,
+      )
+        .bind(id)
+        .all<{ role: string; email: string; name: string | null; signed_at: string | null }>()
+    ).results ?? [];
+
+  // Prefill 4 người ký cho form "Gửi ký điện tử" (best-effort — không chặn nếu thiếu cấu hình).
+  let prefill: SignPrefill | null = null;
+  if (pr.status === 'draft' && eSignAvailable(c.env)) {
+    const pick = async (fn: () => Promise<Approver>): Promise<Approver | null> => {
+      try {
+        return await fn();
+      } catch {
+        return null;
+      }
+    };
+    const [manager, ksnb, bod] = await Promise.all([
+      pick(() => getDeptManager(c.env, pr.dept_code)),
+      pick(() => getActiveIc(c.env)),
+      pick(() => getActiveBod(c.env)),
+    ]);
+    prefill = { manager, ksnb, bod };
+  }
+
+  return c.html(page({ title: pr.code ?? 'Đề nghị TT', user, body: detailBody(user, pr, items, log, signers, prefill, eSignAvailable(c.env)) }));
 });
+
+type SignPrefill = { manager: Approver | null; ksnb: Approver | null; bod: Approver | null };
+
+// Card "Gửi ký điện tử" — 4 người ký prefill (sửa được), Kế toán nhập tay.
+function sendSignCard(pr: PrRow, prefill: SignPrefill | null) {
+  const row = (
+    role: string,
+    label: string,
+    ap: Approver | null,
+    editableName = false,
+  ) => html`<div class="grid grid-cols-12 gap-2 items-center">
+    <div class="col-span-3 text-sm text-slate-600">${label}</div>
+    <input name="${role}_name" value="${esc(ap?.name ?? '')}" placeholder="Họ tên"
+      class="col-span-4 px-2 py-1.5 border ${editableName ? 'border-slate-300' : 'border-slate-200 bg-slate-50'} rounded-md text-sm" />
+    <input name="${role}_email" value="${esc(ap?.email ?? '')}" placeholder="email@anvietenergy.com" type="email" required
+      class="col-span-5 px-2 py-1.5 border border-slate-300 rounded-md text-sm" />
+  </div>`;
+  return html`<div class="bg-blue-50/60 rounded-xl ring-1 ring-blue-200 p-5 space-y-3">
+    <div class="text-sm font-semibold text-blue-900">✍️ Gửi ký điện tử (Documenso)</div>
+    <p class="text-xs text-slate-500 -mt-1">Mỗi người sẽ nhận email mời ký, đăng nhập M365 để ký. Thứ tự: Trưởng bộ phận → (KSNB &amp; Kế toán, bên nào trước cũng được) → BOD.</p>
+    <form method="post" action="/payments/${String(pr.id)}/send-sign" class="space-y-2"
+      onsubmit="return confirm('Gửi phiếu đi ký điện tử? Sau khi gửi sẽ không sửa nội dung được nữa.')">
+      ${row('manager', 'Trưởng bộ phận', prefill?.manager ?? null)}
+      ${row('ksnb', 'KSNB', prefill?.ksnb ?? null)}
+      ${row('acct', 'Kế toán', null, true)}
+      ${row('bod', 'BOD', prefill?.bod ?? null)}
+      <div class="pt-2">
+        <button class="px-5 py-2 bg-blue-900 hover:bg-blue-800 text-white rounded-lg text-sm font-semibold">Gửi đi ký điện tử →</button>
+      </div>
+    </form>
+  </div>`;
+}
 
 function detailBody(
   user: { email: string },
   pr: PrRow,
   items: PrItem[],
   log: Array<{ stage_index: number; stage_name: string; kind: string; actor_email: string; actor_name: string | null; note: string | null; acted_at: string }>,
+  signers: Array<{ role: string; email: string; name: string | null; signed_at: string | null }> = [],
+  prefill: SignPrefill | null = null,
+  eSign = false,
 ) {
   const stage = Number(pr.current_stage);
   const stages = prStages(pr.mid_order);
   const cancelled = pr.status === 'cancelled';
   const isCreator = pr.creator_email.toLowerCase() === user.email.toLowerCase();
-  const canAdvance = !cancelled && stage < LAST_STAGE;
+  // Phiếu đã gửi ký điện tử qua Documenso → chặng do webhook lái, KHÓA nút chỉnh tay.
+  const hasEnvelope = !!pr.documenso_envelope_id;
+  const signCompleted = pr.documenso_status === 'COMPLETED';
+  const canAdvance = !cancelled && !hasEnvelope && stage < LAST_STAGE;
   // Sau Trưởng bộ phận ký: hồ sơ đi KSNB hoặc Kế toán tuỳ bên nào nhận trước.
   const pickMid = canAdvance && stage === 1;
   const nextStage = stage + 1;
+  const roleLabel: Record<string, string> = { manager: 'Trưởng bộ phận', ksnb: 'KSNB', acct: 'Kế toán', bod: 'BOD' };
 
   const kindLabel: Record<string, string> = {
     create: 'Tạo phiếu',
@@ -684,8 +784,11 @@ function detailBody(
       <div class="flex items-center justify-between">
         <a href="/payments" class="text-sm text-slate-500 hover:text-slate-700">← Danh sách</a>
         <div class="flex items-center gap-2">
-          ${pr.status === 'draft' && isCreator
+          ${pr.status === 'draft' && isCreator && !hasEnvelope
             ? html`<a href="/payments/${String(pr.id)}/edit" class="px-3 py-1.5 text-sm ring-1 ring-slate-300 rounded-md hover:bg-slate-50">✎ Sửa</a>`
+            : ''}
+          ${pr.signed_pdf_key
+            ? html`<a href="/payments/${String(pr.id)}/signed.pdf" target="_blank" class="px-3 py-1.5 text-sm bg-emerald-700 text-white rounded-md hover:bg-emerald-800">⬇ PDF đã ký</a>`
             : ''}
           <a href="/payments/${String(pr.id)}/print" target="_blank" class="px-3 py-1.5 text-sm bg-slate-800 text-white rounded-md hover:bg-slate-700">🖨 In phiếu</a>
         </div>
@@ -758,44 +861,76 @@ function detailBody(
       <!-- Hành động trình ký -->
       ${cancelled
         ? html`<div class="bg-slate-100 text-slate-500 rounded-xl p-4 text-sm">Phiếu đã huỷ.</div>`
-        : html`<div class="bg-white rounded-xl ring-1 ring-slate-200 p-5 space-y-4">
-            <div class="text-sm font-semibold text-slate-700">Cập nhật trình ký</div>
-            <div class="flex flex-wrap gap-3 items-end">
-              ${canAdvance
-                ? html`<form method="post" action="/payments/${String(pr.id)}/advance" class="flex flex-wrap gap-2 items-end">
-                    <label class="flex flex-col text-xs text-slate-500 gap-1">Ghi chú (ai đang giữ hồ sơ / tình trạng)
-                      <input name="note" placeholder="vd: đã trình, đang ở bàn KSNB" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-80" />
-                    </label>
-                    ${pickMid
-                      ? html`<button name="to" value="ksnb" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
-                            ✓ Đã xong "${esc(stages[stage])}" → KSNB ký
-                          </button>
-                          <button name="to" value="acct" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
-                            ✓ Đã xong "${esc(stages[stage])}" → Kế toán ký
-                          </button>`
-                      : html`<button class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
-                          ✓ ${nextStage >= LAST_STAGE ? 'Đánh dấu Đã thanh toán' : `Đã xong "${esc(stages[stage])}" → ${esc(stages[nextStage])}`}
-                        </button>`}
-                  </form>`
-                : html`<div class="text-sm text-emerald-700 font-medium">✓ Hồ sơ đã hoàn tất (Đã thanh toán).</div>`}
-            </div>
-            <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
-              <form method="post" action="/payments/${String(pr.id)}/note" class="flex gap-2 items-center">
-                <input name="note" placeholder="Thêm ghi chú vị trí hiện tại" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-72" required />
-                <button class="px-3 py-1.5 text-sm ring-1 ring-slate-300 rounded-md hover:bg-slate-50">Ghi chú</button>
-              </form>
-              ${stage > 0
-                ? html`<form method="post" action="/payments/${String(pr.id)}/revert" onsubmit="return confirm('Lùi về chặng trước?')">
-                    <button class="px-3 py-1.5 text-sm text-amber-700 ring-1 ring-amber-200 rounded-md hover:bg-amber-50">↶ Lùi chặng</button>
-                  </form>`
-                : ''}
-              ${isCreator
-                ? html`<form method="post" action="/payments/${String(pr.id)}/cancel" onsubmit="return confirm('Huỷ phiếu này?')">
-                    <button class="px-3 py-1.5 text-sm text-rose-600 ring-1 ring-rose-200 rounded-md hover:bg-rose-50">Huỷ phiếu</button>
-                  </form>`
-                : ''}
-            </div>
-          </div>`}
+        : hasEnvelope
+          ? html`<div class="bg-white rounded-xl ring-1 ring-slate-200 p-5 space-y-4">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-700">✍️ Ký điện tử (Documenso)</div>
+                <span class="text-xs px-2 py-0.5 rounded-full ${signCompleted ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">${signCompleted ? 'Đã ký xong' : 'Đang chờ ký'}</span>
+              </div>
+              <ul class="space-y-1.5 text-sm">
+                ${signers.map(
+                  (s) => html`<li class="flex items-center gap-2">
+                    <span class="${s.signed_at ? 'text-emerald-600' : 'text-slate-300'}">${s.signed_at ? '✓' : '⏳'}</span>
+                    <span class="font-medium text-slate-700 w-32">${esc(roleLabel[s.role] ?? s.role)}</span>
+                    <span class="text-slate-500">${esc(s.name ?? s.email)}</span>
+                    <span class="text-xs text-slate-400">${s.signed_at ? `· ký ${vnDisplay(s.signed_at)}` : '· chờ ký'}</span>
+                  </li>`,
+                )}
+              </ul>
+              <p class="text-xs text-slate-400">Tiến độ chặng tự cập nhật khi có người ký — không chỉnh tay.</p>
+              <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
+                ${signCompleted && stage < LAST_STAGE
+                  ? html`<form method="post" action="/payments/${String(pr.id)}/advance">
+                      <button class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">✓ Đánh dấu Đã thanh toán</button>
+                    </form>`
+                  : ''}
+                ${isCreator
+                  ? html`<form method="post" action="/payments/${String(pr.id)}/cancel" onsubmit="return confirm('Huỷ phiếu này? (sẽ không tự huỷ bên Documenso)')">
+                      <button class="px-3 py-1.5 text-sm text-rose-600 ring-1 ring-rose-200 rounded-md hover:bg-rose-50">Huỷ phiếu</button>
+                    </form>`
+                  : ''}
+              </div>
+            </div>`
+          : html`
+            ${eSign && pr.status === 'draft' && isCreator ? sendSignCard(pr, prefill) : ''}
+            <div class="bg-white rounded-xl ring-1 ring-slate-200 p-5 space-y-4">
+              <div class="text-sm font-semibold text-slate-700">Cập nhật trình ký${eSign ? ' (thủ công / hồ sơ giấy)' : ''}</div>
+              <div class="flex flex-wrap gap-3 items-end">
+                ${canAdvance
+                  ? html`<form method="post" action="/payments/${String(pr.id)}/advance" class="flex flex-wrap gap-2 items-end">
+                      <label class="flex flex-col text-xs text-slate-500 gap-1">Ghi chú (ai đang giữ hồ sơ / tình trạng)
+                        <input name="note" placeholder="vd: đã trình, đang ở bàn KSNB" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-80" />
+                      </label>
+                      ${pickMid
+                        ? html`<button name="to" value="ksnb" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
+                              ✓ Đã xong "${esc(stages[stage])}" → KSNB ký
+                            </button>
+                            <button name="to" value="acct" class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
+                              ✓ Đã xong "${esc(stages[stage])}" → Kế toán ký
+                            </button>`
+                        : html`<button class="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-md text-sm font-semibold">
+                            ✓ ${nextStage >= LAST_STAGE ? 'Đánh dấu Đã thanh toán' : `Đã xong "${esc(stages[stage])}" → ${esc(stages[nextStage])}`}
+                          </button>`}
+                    </form>`
+                  : html`<div class="text-sm text-emerald-700 font-medium">✓ Hồ sơ đã hoàn tất (Đã thanh toán).</div>`}
+              </div>
+              <div class="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
+                <form method="post" action="/payments/${String(pr.id)}/note" class="flex gap-2 items-center">
+                  <input name="note" placeholder="Thêm ghi chú vị trí hiện tại" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-72" required />
+                  <button class="px-3 py-1.5 text-sm ring-1 ring-slate-300 rounded-md hover:bg-slate-50">Ghi chú</button>
+                </form>
+                ${stage > 0
+                  ? html`<form method="post" action="/payments/${String(pr.id)}/revert" onsubmit="return confirm('Lùi về chặng trước?')">
+                      <button class="px-3 py-1.5 text-sm text-amber-700 ring-1 ring-amber-200 rounded-md hover:bg-amber-50">↶ Lùi chặng</button>
+                    </form>`
+                  : ''}
+                ${isCreator
+                  ? html`<form method="post" action="/payments/${String(pr.id)}/cancel" onsubmit="return confirm('Huỷ phiếu này?')">
+                      <button class="px-3 py-1.5 text-sm text-rose-600 ring-1 ring-rose-200 rounded-md hover:bg-rose-50">Huỷ phiếu</button>
+                    </form>`
+                  : ''}
+              </div>
+            </div>`}
 
       <!-- Lịch sử trình ký -->
       <div class="bg-white rounded-xl ring-1 ring-slate-200 p-5">
@@ -925,6 +1060,129 @@ paymentRoutes.post('/:id{[0-9]+}/cancel', async (c) => {
     .bind(id, pr.current_stage, prStages(pr.mid_order)[pr.current_stage], user.email, user.name)
     .run();
   return c.redirect(`/payments/${id}`);
+});
+
+// ============================ GỬI KÝ ĐIỆN TỬ (DOCUMENSO) ============================
+paymentRoutes.post('/:id{[0-9]+}/send-sign', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  if (!eSignAvailable(c.env))
+    throw unprocessable('Chưa cấu hình ký điện tử (Documenso + Gotenberg).');
+  const pr = await c.env.DB.prepare(`SELECT * FROM payment_request WHERE id = ?1`).bind(id).first<PrRow>();
+  if (!pr) throw notFound('Phiếu không tồn tại');
+  if (pr.creator_email.toLowerCase() !== user.email.toLowerCase())
+    throw forbidden('Chỉ người tạo mới gửi ký.');
+  if (pr.status !== 'draft') throw unprocessable('Phiếu đã trình ký rồi.');
+  if (pr.documenso_envelope_id) throw unprocessable('Phiếu đã gửi ký điện tử.');
+
+  const b = await c.req.parseBody();
+  // role → signingOrder + chặng danh nghĩa (KSNB/Kế toán cùng order 2 = ký song song).
+  const roleDefs = [
+    { role: 'manager' as const, order: 1, stage: 1 },
+    { role: 'ksnb' as const, order: 2, stage: 2 },
+    { role: 'acct' as const, order: 2, stage: 3 },
+    { role: 'bod' as const, order: 3, stage: 4 },
+  ];
+  const signersInput = roleDefs.map((r) => ({
+    ...r,
+    email: String(b[`${r.role}_email`] ?? '').trim(),
+    name: String(b[`${r.role}_name`] ?? '').trim(),
+  }));
+  for (const s of signersInput)
+    if (!s.email) throw badRequest(`Thiếu email người ký (${s.role}).`);
+
+  const items =
+    (
+      await c.env.DB.prepare(
+        `SELECT seq, description, unit_price, qty, amount, currency, note
+           FROM payment_request_item WHERE pr_id = ?1 ORDER BY seq ASC`,
+      )
+        .bind(id)
+        .all<Record<string, unknown>>()
+    ).results ?? [];
+
+  // 1) Render PDF bản in → 2) tạo document Documenso (4 người ký + ô chữ ký inline).
+  const pdf = await renderPaymentPdf(
+    c.env,
+    pr as unknown as Record<string, unknown>,
+    items,
+    { proposerName: pr.creator_name ?? '', managerName: signersInput[0]?.name ?? '' },
+  );
+  const dsSigners: DocumensoSigner[] = signersInput.map((s) => ({
+    email: s.email,
+    name: s.name || s.email,
+    signingOrder: s.order,
+    field: SIGN_FIELD_POS[s.role],
+  }));
+  const created = await createSignedDocument(c.env, {
+    title: pr.code ?? `DNTT-${id}`,
+    externalId: `pr-${id}`,
+    pdf,
+    signers: dsSigners,
+  });
+
+  // 3) Lưu map recipient → role/chặng (match recipient_id theo email).
+  for (const s of signersInput) {
+    const rec = created.recipients.find((r) => (r.email ?? '').toLowerCase() === s.email.toLowerCase());
+    await c.env.DB.prepare(
+      `INSERT INTO payment_request_signer (pr_id, role, stage_index, recipient_id, email, name)
+       VALUES (?1,?2,?3,?4,?5,?6)`,
+    )
+      .bind(id, s.role, s.stage, rec?.id ?? null, s.email, s.name || null)
+      .run();
+  }
+
+  // 4) Gắn envelope vào phiếu + chuyển sang chặng "Trưởng bộ phận ký".
+  await c.env.DB.prepare(
+    `UPDATE payment_request SET documenso_document_id=?2, documenso_envelope_id=?3,
+       documenso_status='PENDING', sign_sent_at=?4, current_stage=1, status='in_progress', updated_at=iso_now()
+     WHERE id=?1`,
+  )
+    .bind(id, created.documentId, created.envelopeId, nowIso())
+    .run();
+
+  // 5) Gửi mail mời ký.
+  await distributeDocument(c.env, created.documentId);
+
+  await c.env.DB.prepare(
+    `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
+     VALUES (?1,1,?2,'advance',?3,?4,?5)`,
+  )
+    .bind(id, prStages(null)[1], user.email, user.name, 'Gửi ký điện tử qua Documenso')
+    .run();
+  const ctx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'pr_send_sign',
+    actorEmail: user.email,
+    actorName: user.name,
+    actorUserId: user.id,
+    proposalId: id,
+    action: 'advance',
+    channel: 'web',
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+    sessionRef: ctx.sessionRef,
+    detail: JSON.stringify({ doc: 'payment_request', documentId: created.documentId, envelopeId: created.envelopeId }),
+  });
+  return c.redirect(`/payments/${id}`);
+});
+
+// Tải bản PDF đã ký (lưu trong FILES sau khi Documenso báo completed).
+paymentRoutes.get('/:id{[0-9]+}/signed.pdf', async (c) => {
+  const id = Number(c.req.param('id'));
+  const pr = await c.env.DB.prepare(`SELECT signed_pdf_key, code FROM payment_request WHERE id = ?1`)
+    .bind(id)
+    .first<{ signed_pdf_key: string | null; code: string | null }>();
+  if (!pr?.signed_pdf_key) throw notFound('Chưa có bản PDF đã ký');
+  const bytes = await c.env.FILES.get(pr.signed_pdf_key);
+  if (!bytes) throw notFound('File không tồn tại trên lưu trữ');
+  const safeName = `${(pr.code ?? `DNTT-${id}`).replace(/[\r\n"\\]/g, '_')}-signed.pdf`;
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${safeName}"`,
+    },
+  });
 });
 
 // ============================ IN ============================

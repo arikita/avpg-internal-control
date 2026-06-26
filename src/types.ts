@@ -34,6 +34,12 @@ export type Bindings = {
   KSNB_TELEGRAM_CHAT_ID: string;
   TELEGRAM_WEBHOOK_SECRET: string;
 
+  // Documenso (ký điện tử DNTT) — trống = tắt ký điện tử, giữ luồng giấy.
+  DOCUMENSO_BASE_URL: string;       // vd http://documenso:3000 (qua avpg-bridge)
+  DOCUMENSO_API_KEY: string;
+  DOCUMENSO_WEBHOOK_SECRET: string; // verify HMAC webhook; trống = không verify
+  GOTENBERG_URL: string;            // render HTML→PDF (vd http://gotenberg:3000)
+
   // Dev-only
   DEV_MOCK_USER?: string;
   DEV_MOCK_USER_EMAIL?: string;

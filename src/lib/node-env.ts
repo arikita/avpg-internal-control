@@ -45,6 +45,11 @@ export function buildNodeEnv(): Bindings {
     KSNB_TELEGRAM_CHAT_ID: process.env.KSNB_TELEGRAM_CHAT_ID ?? '',
     TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
 
+    DOCUMENSO_BASE_URL: process.env.DOCUMENSO_BASE_URL ?? '',
+    DOCUMENSO_API_KEY: process.env.DOCUMENSO_API_KEY ?? '',
+    DOCUMENSO_WEBHOOK_SECRET: process.env.DOCUMENSO_WEBHOOK_SECRET ?? '',
+    GOTENBERG_URL: process.env.GOTENBERG_URL ?? '',
+
     DEV_MOCK_USER: process.env.DEV_MOCK_USER,
     DEV_MOCK_USER_EMAIL: process.env.DEV_MOCK_USER_EMAIL,
     DEV_MOCK_USER_NAME: process.env.DEV_MOCK_USER_NAME,

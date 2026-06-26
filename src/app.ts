@@ -18,6 +18,7 @@ import { webRoutes } from './routes/web';
 import { adminRoutes } from './routes/admin';
 import { invoiceRoutes } from './routes/invoices';
 import { paymentRoutes } from './routes/payments';
+import { documensoRoutes } from './routes/integrations-documenso';
 import { meRoutes } from './routes/me';
 import { staticRoutes } from './routes/static';
 
@@ -44,6 +45,7 @@ app.route('/api/me', meRoutes);
 app.route('/admin', adminRoutes);
 app.route('/invoices', invoiceRoutes);
 app.route('/payments', paymentRoutes);
+app.route('/integrations/documenso', documensoRoutes);
 app.route('/telegram', telegramRoutes);
 app.route('/static', staticRoutes);
 app.route('/', webRoutes);

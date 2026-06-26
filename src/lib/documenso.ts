@@ -65,8 +65,9 @@ export async function createSignedDocument(
       name: s.name,
       role: 'SIGNER' as const,
       signingOrder: s.signingOrder,
-      // Bắt buộc đăng nhập tài khoản (M365 SSO) mới ký được → định danh mạnh, chống chối bỏ.
-      actionAuth: ['ACCOUNT'] as const,
+      // LƯU Ý: actionAuth:['ACCOUNT'] (bắt login mới ký) là tính năng Enterprise của Documenso,
+      // bản community self-host KHÔNG cho set qua API (lỗi "permission to set the action auth") → bỏ.
+      // Định danh người ký vẫn dựa vào: link ký gửi tới đúng email + Documenso chỉ cho login bằng M365 SSO.
       fields: [
         {
           type: 'SIGNATURE' as const,

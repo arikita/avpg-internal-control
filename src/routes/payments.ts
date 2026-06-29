@@ -242,7 +242,7 @@ function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }
   return html`
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-xl font-semibold text-slate-800">💳 Đề nghị Thanh toán — Theo dõi trình ký</h1>
-      <a href="/payments/new" class="bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">+ Tạo đề nghị</a>
+      <a href="/payments/new" class="bg-primary text-primary-foreground hover:opacity-90 text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">+ Tạo đề nghị</a>
     </div>
     <div class="flex flex-wrap gap-2 mb-3">
       ${tab('scope', 'all', 'Tất cả phiếu', 'bg-blue-900 text-white')}

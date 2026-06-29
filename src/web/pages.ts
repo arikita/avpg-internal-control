@@ -142,7 +142,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             💳 Đề nghị Thanh toán
           </a>`
             : ''}
-          <a href="/p/new" class="bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">
+          <a href="/p/new" class="bg-primary text-primary-foreground hover:opacity-90 text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">
             + Tạo phiếu mới
           </a>
         </div>
@@ -182,7 +182,7 @@ export function appPage(user: SessionUser, role: DashboardRoleInfo) {
             <div x-show="tgToken" class="text-xs text-slate-500 text-center">Token có hiệu lực 10 phút.</div>
             <div class="flex justify-end gap-2 pt-2 border-t border-slate-200">
               <button @click="genToken()" :disabled="tgBusy"
-                class="px-4 py-1.5 bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white text-sm rounded disabled:opacity-50">
+                class="px-4 py-1.5 bg-primary text-primary-foreground hover:opacity-90 text-sm rounded disabled:opacity-50">
                 <span x-text="tgToken ? 'Tạo token mới' : 'Tạo token'"></span>
               </button>
             </div>
@@ -891,7 +891,7 @@ export function proposalFormPage(user: SessionUser, existing?: ExistingProposal)
               Lưu nháp
             </button>
             <button type="submit" :disabled="busy"
-              class="px-5 py-2 bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white rounded text-sm font-medium disabled:opacity-50">
+              class="px-5 py-2 bg-primary text-primary-foreground hover:opacity-90 rounded text-sm font-medium disabled:opacity-50">
               <span x-text="busy ? 'Đang gửi…' : 'Gửi duyệt'"></span>
             </button>
           </div>
@@ -1322,7 +1322,7 @@ export function proposalDetailPage(
         <div class="flex flex-wrap gap-2">
           ${canSubmit
             ? html`<button @click="action('submit')" :disabled="busy"
-                class="px-4 py-2 bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white rounded text-sm font-medium disabled:opacity-50">
+                class="px-4 py-2 bg-primary text-primary-foreground hover:opacity-90 rounded text-sm font-medium disabled:opacity-50">
                 Gửi duyệt
               </button>`
             : ''}

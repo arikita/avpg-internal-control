@@ -18,66 +18,66 @@ type LayoutOpts = {
   wide?: boolean;
 };
 
-export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChrome = false, wide = false }: LayoutOpts): Promise<HtmlEscapedString> {
+export async function page({ title, user, body, bodyClass = 'bg-background text-foreground', noChrome = false, wide = false }: LayoutOpts): Promise<HtmlEscapedString> {
   const resolvedBody = typeof body === 'string' ? body : await body;
   const containerW = wide ? 'max-w-screen-2xl' : 'max-w-6xl';
   const chrome = noChrome
     ? html`${resolvedBody}`
     : html`
-  <header class="bg-gradient-to-r from-blue-950 via-blue-900 to-blue-800 text-white shadow-sm">
+  <header class="bg-card/95 backdrop-blur border-b border-border text-foreground shadow-sm sticky top-0 z-40">
     <div class="${containerW} mx-auto px-4 py-3 flex items-center justify-between">
       <a href="/" class="flex items-center gap-3">
         <span class="text-xl">📋</span>
         <span class="flex flex-col leading-tight">
-          <span class="text-[10px] tracking-[0.3em] text-yellow-400 font-semibold">AN VIỆT PHÁT GROUP</span>
-          <span class="font-semibold text-white">Phiếu Đề Xuất</span>
+          <span class="text-[10px] tracking-[0.3em] text-[#C5A622] font-semibold">AN VIỆT PHÁT GROUP</span>
+          <span class="font-semibold text-foreground">Phiếu Đề Xuất</span>
         </span>
       </a>
       <nav class="flex items-center gap-4 text-sm">
         ${user
           ? html`
-              <a href="/app" class="text-blue-100 hover:text-yellow-400 transition">Dashboard</a>
-              <a href="/p/new" class="text-blue-100 hover:text-yellow-400 transition">Tạo phiếu</a>
+              <a href="/app" class="text-muted-foreground hover:text-foreground transition">Dashboard</a>
+              <a href="/p/new" class="text-muted-foreground hover:text-foreground transition">Tạo phiếu</a>
               ${user.deptCode?.toUpperCase() === 'IT'
-                ? html`<a href="/payments" class="text-blue-100 hover:text-yellow-400 transition">Đề nghị TT</a>`
+                ? html`<a href="/payments" class="text-muted-foreground hover:text-foreground transition">Đề nghị TT</a>`
                 : ''}
-              <a href="/invoices" class="text-blue-100 hover:text-yellow-400 transition">Hóa đơn NCC</a>
+              <a href="/invoices" class="text-muted-foreground hover:text-foreground transition">Hóa đơn NCC</a>
               ${user.isAdmin
                 ? html`<div class="relative" x-data="{ o: false }">
-                    <button @click="o=!o" class="text-blue-100 hover:text-yellow-400 transition">Quản trị ▾</button>
+                    <button @click="o=!o" class="text-muted-foreground hover:text-foreground transition">Quản trị ▾</button>
                     <div x-show="o" x-cloak @click.outside="o=false"
-                      class="absolute right-0 mt-2 w-48 bg-white text-slate-700 rounded-md shadow-lg ring-1 ring-slate-200 py-1 z-50">
-                      <a href="/admin/approvers" class="block px-3 py-2 text-sm hover:bg-blue-50">Người duyệt</a>
-                      <a href="/admin/audit" class="block px-3 py-2 text-sm hover:bg-blue-50">Nhật ký duyệt</a>
-                      <a href="/invoices/admin/buyer-map" class="block px-3 py-2 text-sm hover:bg-blue-50">Map nhà máy (HĐ)</a>
+                      class="absolute right-0 mt-2 w-48 bg-card text-foreground rounded-md shadow-lg ring-1 ring-border py-1 z-50">
+                      <a href="/admin/approvers" class="block px-3 py-2 text-sm hover:bg-muted">Người duyệt</a>
+                      <a href="/admin/audit" class="block px-3 py-2 text-sm hover:bg-muted">Nhật ký duyệt</a>
+                      <a href="/invoices/admin/buyer-map" class="block px-3 py-2 text-sm hover:bg-muted">Map nhà máy (HĐ)</a>
                     </div>
                   </div>`
                 : ''}
               <div x-data="inboxBell()" class="relative">
-                <button @click="open=!open" class="relative flex items-center text-blue-100 hover:text-yellow-400 transition" title="Thông báo">
+                <button @click="open=!open" class="relative flex items-center text-muted-foreground hover:text-foreground transition pt-1" title="Thông báo">
                   <span class="text-lg">🔔</span>
                   <span x-show="unread>0" x-cloak x-text="unread>9?'9+':unread"
                     class="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] leading-none rounded-full px-1 py-0.5 min-w-[16px] text-center"></span>
                 </button>
                 <div x-show="open" x-cloak @click.outside="open=false"
-                  class="absolute right-0 mt-2 w-80 bg-white text-slate-700 rounded-md shadow-lg ring-1 ring-slate-200 z-50">
-                  <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+                  class="absolute right-0 mt-2 w-80 bg-card text-foreground rounded-md shadow-lg ring-1 ring-border z-50">
+                  <div class="flex items-center justify-between px-3 py-2 border-b border-border">
                     <span class="text-sm font-semibold">Thông báo</span>
-                    <button @click="markAll()" x-show="unread>0" class="text-xs text-blue-600 hover:underline">Đánh dấu đã đọc</button>
+                    <button @click="markAll()" x-show="unread>0" class="text-xs text-[#C5A622] hover:underline">Đánh dấu đã đọc</button>
                   </div>
                   <div class="max-h-96 overflow-auto">
                     <template x-if="items.length===0">
-                      <div class="px-3 py-6 text-center text-sm text-slate-400">Chưa có thông báo</div>
+                      <div class="px-3 py-6 text-center text-sm text-muted-foreground">Chưa có thông báo</div>
                     </template>
                     <template x-for="it in items" :key="it.id">
-                      <a href="#" @click.prevent="openItem(it)" class="block px-3 py-2 border-b border-slate-50 hover:bg-blue-50"
-                        :class="!it.read_at ? 'bg-blue-50/40' : ''">
+                      <a href="#" @click.prevent="openItem(it)" class="block px-3 py-2 border-b border-border hover:bg-muted"
+                        :class="!it.read_at ? 'bg-primary/10' : ''">
                         <div class="flex items-start gap-2">
-                          <span class="mt-1 w-2 h-2 rounded-full shrink-0" :class="!it.read_at ? 'bg-blue-500' : 'bg-transparent'"></span>
+                          <span class="mt-1 w-2 h-2 rounded-full shrink-0" :class="!it.read_at ? 'bg-primary' : 'bg-transparent'"></span>
                           <div class="min-w-0">
-                            <div class="text-sm font-medium text-slate-800" x-text="it.title"></div>
-                            <div class="text-xs text-slate-500" x-text="it.body"></div>
-                            <div class="text-[11px] text-slate-400" x-text="fmt(it.created_at)"></div>
+                            <div class="text-sm font-medium text-foreground" x-text="it.title"></div>
+                            <div class="text-xs text-muted-foreground" x-text="it.body"></div>
+                            <div class="text-[11px] text-muted-foreground/80" x-text="fmt(it.created_at)"></div>
                           </div>
                         </div>
                       </a>
@@ -87,24 +87,24 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
                 <!-- Toast nổi góc dưới phải (position:fixed nên thoát khỏi header) -->
                 <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-80 pointer-events-none">
                   <template x-for="t in toasts" :key="t.id">
-                    <div class="pointer-events-auto bg-white text-slate-700 rounded-lg shadow-xl ring-1 ring-slate-200 p-3 flex items-start gap-2">
+                    <div class="pointer-events-auto bg-card text-foreground rounded-lg shadow-xl ring-1 ring-border p-3 flex items-start gap-2">
                       <span class="text-lg">🖊️</span>
                       <div class="min-w-0 flex-1 cursor-pointer" @click="openItem(t)">
-                        <div class="text-sm font-semibold text-slate-800" x-text="t.title"></div>
-                        <div class="text-xs text-slate-500" x-text="t.body"></div>
+                        <div class="text-sm font-semibold text-foreground" x-text="t.title"></div>
+                        <div class="text-xs text-muted-foreground" x-text="t.body"></div>
                       </div>
-                      <button @click.stop="dismiss(t.id)" class="text-slate-400 hover:text-slate-600 text-sm leading-none">✕</button>
+                      <button @click.stop="dismiss(t.id)" class="text-muted-foreground hover:text-foreground text-sm leading-none">✕</button>
                     </div>
                   </template>
                 </div>
               </div>
-              <span class="text-blue-300/50">|</span>
-              <span class="text-blue-100">${user.name}</span>
+              <span class="text-border">|</span>
+              <span class="text-foreground">${user.name}</span>
               <form method="post" action="/auth/logout" class="inline">
-                <button type="submit" class="text-blue-200 hover:text-red-300 transition">Đăng xuất</button>
+                <button type="submit" class="text-muted-foreground hover:text-red-500 transition">Đăng xuất</button>
               </form>
             `
-          : html`<a href="/auth/login" class="text-yellow-400 hover:underline">Đăng nhập M365</a>`}
+          : html`<a href="/auth/login" class="text-[#C5A622] hover:underline">Đăng nhập M365</a>`}
       </nav>
     </div>
   </header>
@@ -113,8 +113,8 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
       ${resolvedBody}
     </div>
   </main>
-  <footer class="border-t border-slate-200 bg-white">
-    <div class="${containerW} mx-auto px-4 py-3 text-xs text-slate-400 flex justify-between">
+  <footer class="border-t border-border bg-card">
+    <div class="${containerW} mx-auto px-4 py-3 text-xs text-muted-foreground flex justify-between">
       <span>© 2026 An Việt Phát Group · Hệ thống quy trình nội bộ</span>
       <span>Phase 1</span>
     </div>
@@ -128,6 +128,80 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
   <title>${title} · AVPG · Phiếu Đề Xuất</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><text y=%22.9em%22 font-size=%2222%22>📋</text></svg>" />
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Design system dùng chung (đồng bộ với trang login / template sign). Semantic colors trỏ
+    // tới CSS vars để tự đổi theo dark/light. Mọi trang tham chiếu bg-background/foreground/card/
+    // border/muted/primary thay vì hard-code slate/blue.
+    tailwind.config = {
+      darkMode: 'media',
+      theme: {
+        extend: {
+          colors: {
+            background: 'hsl(var(--bg))',
+            foreground: 'hsl(var(--fg))',
+            card: 'hsl(var(--card))',
+            'card-foreground': 'hsl(var(--card-fg))',
+            muted: 'hsl(var(--muted))',
+            'muted-foreground': 'hsl(var(--muted-fg))',
+            border: 'hsl(var(--border))',
+            input: 'hsl(var(--input))',
+            ring: 'hsl(var(--ring))',
+            primary: { DEFAULT: 'hsl(var(--primary))', foreground: 'hsl(var(--primary-fg))' },
+            accent: { DEFAULT: 'hsl(var(--accent))', foreground: 'hsl(var(--accent-fg))' },
+          },
+        },
+      },
+    };
+  </script>
+  <style type="text/tailwindcss">
+    /* Tokens lấy từ trang sign (Documenso). Dark theo prefers-color-scheme. */
+    :root {
+      --bg: 0 0% 100%;            --fg: 222.2 47.4% 11.2%;
+      --card: 0 0% 100%;          --card-fg: 222.2 47.4% 11.2%;
+      --muted: 210 40% 96.1%;     --muted-fg: 215.4 16.3% 46.9%;
+      --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%;
+      --primary: 49 74% 53%;      --primary-fg: 49 74% 10%;
+      --accent: 210 40% 96.1%;    --accent-fg: 222.2 47.4% 11.2%;
+      --ring: 49 74% 53%;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: 0 0% 14.9%;          --fg: 0 0% 97%;
+        --card: 0 0% 14.9%;        --card-fg: 0 0% 95%;
+        --muted: 0 0% 23.4%;       --muted-fg: 0 0% 75%;
+        --border: 0 0% 27.9%;      --input: 0 0% 27.9%;
+        --primary: 49 74% 53%;     --primary-fg: 49 74% 10%;
+        --accent: 0 0% 23.4%;      --accent-fg: 0 0% 95%;
+        --ring: 49 74% 53%;
+      }
+    }
+    @layer components {
+      .av-card { @apply rounded-xl border border-border bg-card shadow-sm; }
+      .av-btn-primary { @apply inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm transition hover:opacity-90 disabled:opacity-50; }
+      .av-btn-secondary { @apply inline-flex items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted; }
+      .av-input { @apply w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background; }
+    }
+    /* Lớp tương thích: trang chưa refactor vẫn đổi tông đúng ở dark (và bớt lệch ở light). */
+    @media (prefers-color-scheme: dark) {
+      .bg-white { background-color: hsl(var(--card)) !important; }
+      .bg-slate-50 { background-color: hsl(0 0% 11%) !important; }
+      .bg-slate-100 { background-color: hsl(0 0% 18%) !important; }
+      .bg-slate-100\/60, .bg-slate-50\/60 { background-color: hsl(0 0% 18% / 0.6) !important; }
+      .bg-slate-200 { background-color: hsl(0 0% 24%) !important; }
+      .text-slate-900, .text-slate-800, .text-slate-700 { color: hsl(0 0% 95%) !important; }
+      .text-slate-600, .text-slate-500 { color: hsl(0 0% 72%) !important; }
+      .text-slate-400 { color: hsl(0 0% 58%) !important; }
+      .border-slate-200, .border-slate-100, .border-slate-300 { border-color: hsl(var(--border)) !important; }
+      .ring-slate-200, .ring-slate-100 { --tw-ring-color: hsl(var(--border)) !important; }
+      .divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)) !important; }
+      .hover\:bg-slate-50:hover, .hover\:bg-blue-50:hover, .hover\:bg-slate-100:hover { background-color: hsl(0 0% 20%) !important; }
+      /* chữ/nền xanh accent → dễ đọc trên nền tối */
+      .text-blue-900, .text-blue-800, .text-blue-700, .text-blue-600 { color: hsl(49 74% 62%) !important; }
+      .bg-blue-50, .bg-blue-100 { background-color: hsl(0 0% 20%) !important; }
+      .border-blue-200, .border-blue-300 { border-color: hsl(var(--border)) !important; }
+      .bg-blue-50\/40 { background-color: hsl(49 74% 53% / 0.12) !important; }
+    }
+  </style>
   <script>
     // Chuông thông báo in-app: poll /notifications/inbox, hiện badge + bật toast khi có cái mới.
     window.inboxBell = function () {

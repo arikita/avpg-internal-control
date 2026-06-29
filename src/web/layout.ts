@@ -53,6 +53,51 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
                     </div>
                   </div>`
                 : ''}
+              <div x-data="inboxBell()" class="relative">
+                <button @click="open=!open" class="relative flex items-center text-blue-100 hover:text-yellow-400 transition" title="Thông báo">
+                  <span class="text-lg">🔔</span>
+                  <span x-show="unread>0" x-cloak x-text="unread>9?'9+':unread"
+                    class="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] leading-none rounded-full px-1 py-0.5 min-w-[16px] text-center"></span>
+                </button>
+                <div x-show="open" x-cloak @click.outside="open=false"
+                  class="absolute right-0 mt-2 w-80 bg-white text-slate-700 rounded-md shadow-lg ring-1 ring-slate-200 z-50">
+                  <div class="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+                    <span class="text-sm font-semibold">Thông báo</span>
+                    <button @click="markAll()" x-show="unread>0" class="text-xs text-blue-600 hover:underline">Đánh dấu đã đọc</button>
+                  </div>
+                  <div class="max-h-96 overflow-auto">
+                    <template x-if="items.length===0">
+                      <div class="px-3 py-6 text-center text-sm text-slate-400">Chưa có thông báo</div>
+                    </template>
+                    <template x-for="it in items" :key="it.id">
+                      <a href="#" @click.prevent="openItem(it)" class="block px-3 py-2 border-b border-slate-50 hover:bg-blue-50"
+                        :class="!it.read_at ? 'bg-blue-50/40' : ''">
+                        <div class="flex items-start gap-2">
+                          <span class="mt-1 w-2 h-2 rounded-full shrink-0" :class="!it.read_at ? 'bg-blue-500' : 'bg-transparent'"></span>
+                          <div class="min-w-0">
+                            <div class="text-sm font-medium text-slate-800" x-text="it.title"></div>
+                            <div class="text-xs text-slate-500" x-text="it.body"></div>
+                            <div class="text-[11px] text-slate-400" x-text="fmt(it.created_at)"></div>
+                          </div>
+                        </div>
+                      </a>
+                    </template>
+                  </div>
+                </div>
+                <!-- Toast nổi góc dưới phải (position:fixed nên thoát khỏi header) -->
+                <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 w-80 pointer-events-none">
+                  <template x-for="t in toasts" :key="t.id">
+                    <div class="pointer-events-auto bg-white text-slate-700 rounded-lg shadow-xl ring-1 ring-slate-200 p-3 flex items-start gap-2">
+                      <span class="text-lg">🖊️</span>
+                      <div class="min-w-0 flex-1 cursor-pointer" @click="openItem(t)">
+                        <div class="text-sm font-semibold text-slate-800" x-text="t.title"></div>
+                        <div class="text-xs text-slate-500" x-text="t.body"></div>
+                      </div>
+                      <button @click.stop="dismiss(t.id)" class="text-slate-400 hover:text-slate-600 text-sm leading-none">✕</button>
+                    </div>
+                  </template>
+                </div>
+              </div>
               <span class="text-blue-300/50">|</span>
               <span class="text-blue-100">${user.name}</span>
               <form method="post" action="/auth/logout" class="inline">
@@ -83,6 +128,61 @@ export async function page({ title, user, body, bodyClass = 'bg-slate-50', noChr
   <title>${title} · AVPG · Phiếu Đề Xuất</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><text y=%22.9em%22 font-size=%2222%22>📋</text></svg>" />
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // Chuông thông báo in-app: poll /notifications/inbox, hiện badge + bật toast khi có cái mới.
+    window.inboxBell = function () {
+      return {
+        open: false,
+        unread: 0,
+        items: [],
+        toasts: [],
+        baseline: null, // id lớn nhất đã thấy lúc nạp trang — tránh toast lại tồn đọng cũ
+        init() {
+          this.poll();
+          setInterval(() => this.poll(), 20000);
+          document.addEventListener('visibilitychange', () => { if (!document.hidden) this.poll(); });
+        },
+        async poll() {
+          try {
+            const r = await fetch('/notifications/inbox', { headers: { accept: 'application/json' } });
+            if (!r.ok) return;
+            const d = await r.json();
+            this.unread = d.unread || 0;
+            this.items = d.items || [];
+            const maxId = this.items.length ? this.items[0].id : 0;
+            if (this.baseline === null) {
+              this.baseline = maxId; // lần poll đầu: lập mốc, không toast tồn đọng
+            } else if (maxId > this.baseline) {
+              const fresh = this.items.filter((i) => i.id > this.baseline).reverse();
+              for (const it of fresh) this.pushToast(it);
+              this.baseline = maxId;
+            }
+          } catch (e) {}
+        },
+        pushToast(it) {
+          this.toasts.push(it);
+          setTimeout(() => { this.toasts = this.toasts.filter((t) => t.id !== it.id); }, 9000);
+        },
+        dismiss(id) { this.toasts = this.toasts.filter((t) => t.id !== id); },
+        async openItem(it) {
+          try { await fetch('/notifications/inbox/' + it.id + '/read', { method: 'POST' }); } catch (e) {}
+          if (it.link) window.location.href = it.link;
+        },
+        async markAll() {
+          try { await fetch('/notifications/inbox/read-all', { method: 'POST' }); } catch (e) {}
+          this.unread = 0;
+          this.items = this.items.map((i) => Object.assign({}, i, { read_at: i.read_at || 'x' }));
+        },
+        fmt(ts) {
+          try {
+            const d = new Date(ts);
+            if (isNaN(d.getTime())) return '';
+            return d.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+          } catch (e) { return ''; }
+        },
+      };
+    };
+  </script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
   <style>
     [x-cloak] { display: none !important; }

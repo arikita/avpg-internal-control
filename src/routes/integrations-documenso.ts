@@ -9,7 +9,16 @@ import type { AppEnv } from '../types';
 import { prStages } from './payments';
 import { downloadDocumentPdf, verifyWebhookSecret } from '../lib/documenso';
 import { logAudit } from '../lib/audit';
+import { enqueueInbox } from '../lib/inbox';
 import { nowIso } from '../lib/time';
+
+// Nhãn vai trò người ký để hiện trong thông báo cho người tạo phiếu.
+const ROLE_LABEL: Record<string, string> = {
+  manager: 'Trưởng bộ phận',
+  ksnb: 'KSNB',
+  acct: 'Kế toán',
+  bod: 'Ban giám đốc',
+};
 
 export const documensoRoutes = new Hono<AppEnv>();
 
@@ -61,10 +70,10 @@ documensoRoutes.post('/webhook', async (c) => {
   if (!docId) return c.json({ ok: true, ignored: 'no document id' });
 
   const pr = await c.env.DB.prepare(
-    `SELECT id, current_stage, mid_order, status FROM payment_request WHERE documenso_document_id = ?1`,
+    `SELECT id, code, creator_email, current_stage, mid_order, status FROM payment_request WHERE documenso_document_id = ?1`,
   )
     .bind(docId)
-    .first<{ id: number; current_stage: number; mid_order: string | null; status: string }>();
+    .first<{ id: number; code: string | null; creator_email: string | null; current_stage: number; mid_order: string | null; status: string }>();
   if (!pr) return c.json({ ok: true, ignored: `no payment_request for document ${docId}` });
 
   const event = body.event ?? '';
@@ -92,6 +101,20 @@ documensoRoutes.post('/webhook', async (c) => {
       await c.env.DB.prepare(`UPDATE payment_request_signer SET signed_at = ?2 WHERE id = ?1`)
         .bind(match.id, at)
         .run();
+
+      // Thông báo in-app cho người tạo phiếu: ai vừa ký. (Một lần/người vì gác bằng signed_at.)
+      if (pr.creator_email) {
+        const roleLabel = ROLE_LABEL[match.role] ?? match.role;
+        const who = match.name || match.email;
+        await enqueueInbox(c.env, {
+          recipient: pr.creator_email,
+          kind: 'pr_signed',
+          title: `${roleLabel} đã ký phiếu ${pr.code ?? `#${pr.id}`}`,
+          body: `${who} đã ký điện tử.`,
+          link: `/payments/${pr.id}`,
+          prId: pr.id,
+        });
+      }
     }
   }
 
@@ -116,6 +139,19 @@ documensoRoutes.post('/webhook', async (c) => {
   if (completed) {
     newStage = 4; // đã ký xong; chờ "Đã thanh toán" (stage 5) thủ công
     docStatus = 'COMPLETED';
+
+    // Thông báo hoàn tất ký cho người tạo — chỉ lần đầu (gác bằng current_stage < 4).
+    if (pr.creator_email && pr.current_stage < 4) {
+      await enqueueInbox(c.env, {
+        recipient: pr.creator_email,
+        kind: 'pr_completed',
+        title: `Phiếu ${pr.code ?? `#${pr.id}`} đã ký xong`,
+        body: 'Tất cả đã ký điện tử. Phiếu chờ thanh toán.',
+        link: `/payments/${pr.id}`,
+        prId: pr.id,
+      });
+    }
+
     try {
       const existing = await c.env.DB.prepare(`SELECT signed_pdf_key FROM payment_request WHERE id = ?1`)
         .bind(pr.id)

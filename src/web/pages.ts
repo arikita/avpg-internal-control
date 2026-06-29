@@ -23,89 +23,90 @@ export function landingPage(user: SessionUser | null) {
     { title: 'Thông báo realtime', desc: 'Email + Telegram khi có phiếu mới' },
   ];
 
-  const body = html`
-    <div class="min-h-screen flex">
-      <!-- Left: blue panel -->
-      <div class="hidden lg:flex w-1/2 bg-gradient-to-br from-blue-950 via-blue-900 to-blue-800 text-white p-12 flex-col justify-between relative overflow-hidden">
-        <!-- Subtle diagonal pattern -->
-        <div class="absolute inset-0 opacity-10" style="background-image: repeating-linear-gradient(45deg, transparent, transparent 20px, rgba(255,255,255,0.1) 20px, rgba(255,255,255,0.1) 22px);"></div>
+  // Thiết kế theo template signin của Documenso (sign.anvietphatgroup.com): card đơn căn
+  // giữa + nền pattern contour mờ + bảng màu/typography/nút theo design tokens trang sign
+  // (gold #E0C030, radius .5rem, hỗ trợ dark/light qua prefers-color-scheme). Nội dung &
+  // cơ chế đăng nhập M365 giữ nguyên. Pattern phục vụ ở /static/login-bg.png.
+  const msLogo = html`<svg viewBox="0 0 23 23" class="h-5 w-5" aria-hidden="true"><rect x="1" y="1" width="10" height="10" fill="#F25022"/><rect x="12" y="1" width="10" height="10" fill="#7FBA00"/><rect x="1" y="12" width="10" height="10" fill="#00A4EF"/><rect x="12" y="12" width="10" height="10" fill="#FFB900"/></svg>`;
+  const check = html`<svg viewBox="0 0 20 20" class="h-3.5 w-3.5 shrink-0 text-[#C5A622]" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>`;
 
-        <div class="relative z-10 max-w-md mx-auto w-full flex-1 flex flex-col justify-center">
-          <!-- Logo placeholder — anh upload logo AVPG sau thì thay vào -->
-          <div class="text-center mb-8">
-            <p class="text-sm tracking-[0.3em] text-yellow-400 font-semibold">AN VIỆT PHÁT GROUP</p>
+  const body = html`
+    <style>
+      /* Design tokens lấy từ trang sign (HSL). Dark theo prefers-color-scheme. */
+      .av-login {
+        --bg: 0 0% 100%;
+        --fg: 222.2 47.4% 11.2%;
+        --card: 0 0% 96.1%;            /* neutral-100 */
+        --border: 214.3 31.8% 91.4%;
+        --muted-fg: 215.4 16.3% 46.9%;
+      }
+      @media (prefers-color-scheme: dark) {
+        .av-login {
+          --bg: 0 0% 14.9%;
+          --fg: 0 0% 97%;
+          --card: 0 0% 14.9%;
+          --border: 0 0% 27.9%;
+          --muted-fg: 0 0% 85%;
+        }
+      }
+    </style>
+    <div class="av-login relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden px-4 py-10 text-[hsl(var(--fg))]">
+      <!-- Nền pattern contour mờ (như trang sign): img lớn căn giữa, radial mask, đảo màu ở dark -->
+      <div class="pointer-events-none absolute -inset-[min(600px,max(400px,60vw))] -z-[1] flex items-center justify-center opacity-70" aria-hidden="true">
+        <img src="/static/login-bg.png" alt="" class="dark:brightness-95 dark:contrast-[70%] dark:invert dark:sepia"
+          style="mask:radial-gradient(rgba(255,255,255,1) 0%, transparent 80%);-webkit-mask:radial-gradient(rgba(255,255,255,1) 0%, transparent 80%)" />
+      </div>
+
+      <div class="w-screen max-w-lg px-4">
+        <!-- Card đăng nhập -->
+        <div class="z-10 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 shadow-sm">
+          <div class="mb-4">
+            <p class="text-xs font-semibold tracking-[0.3em] text-[#C5A622]">AN VIỆT PHÁT GROUP</p>
+            <p class="mt-0.5 text-[10px] italic text-[hsl(var(--muted-fg))]">Together growing strong &amp; success</p>
           </div>
 
-          <!-- Title -->
-          <h1 class="text-3xl font-bold text-center leading-tight">
-            Phiếu Đề Xuất<br>
-            <span class="text-yellow-400">An Việt Phát Group</span>
-          </h1>
-
-          <!-- Subtitle -->
-          <p class="text-center text-blue-100 mt-4 mb-10 leading-relaxed">
+          <h1 class="font-semibold text-2xl text-[hsl(var(--fg))]">Phiếu Đề Xuất</h1>
+          <p class="mt-2 text-sm leading-relaxed text-[hsl(var(--muted-fg))]">
             Hệ thống quy trình đề xuất &amp; phê duyệt nội bộ, áp dụng cho toàn bộ nhân viên các công ty thành viên tập đoàn.
           </p>
 
-          <!-- Icons row -->
-          <div class="flex justify-center gap-6 mb-8 text-yellow-400">
-            <svg viewBox="0 0 24 24" class="w-12 h-12" fill="currentColor"><path d="M12 1L3 5v6c0 5.5 3.8 10.7 9 12 5.2-1.3 9-6.5 9-12V5l-9-4zm-1 16l-4-4 1.4-1.4L11 14.2l5.6-5.6L18 10l-7 7z"/></svg>
-            <svg viewBox="0 0 24 24" class="w-12 h-12" fill="currentColor"><path d="M12 1L2 6v2h20V6L12 1zm-8 9v8H2v2h20v-2h-2v-8h-2v8h-3v-8h-2v8h-2v-8H9v8H6v-8H4z"/></svg>
-            <svg viewBox="0 0 24 24" class="w-12 h-12" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+          <hr class="-mx-6 my-4 border-[hsl(var(--border))]" />
+
+          <div class="flex w-full flex-col gap-y-4">
+            <a href="/auth/login"
+               class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[#E0C030] px-8 font-semibold text-[hsl(49_74%_10%)] shadow-sm transition hover:bg-[#E0C030]/90">
+              ${msLogo}
+              <span>Đăng nhập M365</span>
+            </a>
           </div>
 
-          <!-- Feature cards 2x2 -->
-          <div class="grid grid-cols-2 gap-3">
-            ${features.map(
-              (f) => html`
-                <div class="bg-blue-800/40 border border-blue-700/50 rounded-lg p-3 text-center backdrop-blur-sm">
-                  <div class="text-yellow-400 text-sm font-semibold flex items-center justify-center gap-1.5 mb-1">
-                    <svg viewBox="0 0 20 20" class="w-4 h-4" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
-                    <span>${f.title}</span>
-                  </div>
-                  <div class="text-xs text-blue-100/80 leading-snug">${f.desc}</div>
-                </div>
-              `,
-            )}
-          </div>
-        </div>
-
-        <div class="relative z-10 text-center text-xs text-blue-200/70">© 2026 An Việt Phát Group</div>
-      </div>
-
-      <!-- Right: white login panel -->
-      <div class="w-full lg:w-1/2 bg-white flex items-center justify-center p-8">
-        <div class="max-w-md w-full">
-          <!-- Logo placeholder — anh upload logo AVPG sau thì thay vào -->
-          <div class="text-center mb-8">
-            <p class="text-xs tracking-[0.3em] text-yellow-600 font-semibold">AN VIỆT PHÁT GROUP</p>
-            <p class="text-[10px] text-slate-400 italic mt-1">Together growing strong &amp; success</p>
-          </div>
-
-          <h2 class="text-3xl font-bold text-center text-slate-900 mb-2">Đăng nhập</h2>
-          <p class="text-slate-500 text-center text-sm mb-8 leading-relaxed">
-            Vui lòng đăng nhập bằng tài khoản M365 của anh/chị<br>
-            để truy cập hệ thống Phiếu Đề Xuất.
+          <p class="mt-6 text-xs leading-relaxed text-[hsl(var(--muted-fg))]">
+            Bằng việc đăng nhập, anh/chị đồng ý tuân thủ chính sách bảo mật thông tin của An Việt Phát Group.
           </p>
-
-          <a href="/auth/login"
-             class="flex items-center justify-center gap-2 w-full bg-gradient-to-r from-blue-900 to-blue-700 hover:from-blue-800 hover:to-blue-600 text-white font-semibold py-3 rounded-lg shadow-md transition">
-            <svg viewBox="0 0 23 23" class="w-5 h-5"><rect x="1" y="1" width="10" height="10" fill="#F25022"/><rect x="12" y="1" width="10" height="10" fill="#7FBA00"/><rect x="1" y="12" width="10" height="10" fill="#00A4EF"/><rect x="12" y="12" width="10" height="10" fill="#FFB900"/></svg>
-            <span>Đăng nhập M365</span>
-          </a>
-
-          <p class="text-xs text-slate-400 text-center mt-8 leading-relaxed">
-            Bằng việc đăng nhập, anh/chị đồng ý tuân thủ chính sách<br>
-            bảo mật thông tin của An Việt Phát Group.
-          </p>
-          <p class="text-xs text-slate-400 text-center mt-3">
+          <p class="mt-2 text-xs text-[hsl(var(--muted-fg))]">
             Chưa được gán phòng ban? Liên hệ quản trị hệ thống để được hỗ trợ.
           </p>
         </div>
+
+        <!-- Panel tính năng — đưa xuống dưới card (template sign là card đơn) -->
+        <div class="mt-5 grid grid-cols-2 gap-2.5">
+          ${features.map(
+            (f) => html`
+              <div class="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2.5">
+                <div class="flex items-center gap-1.5 text-xs font-semibold text-[hsl(var(--fg))]">
+                  ${check}<span>${f.title}</span>
+                </div>
+                <div class="mt-0.5 text-[11px] leading-snug text-[hsl(var(--muted-fg))]">${f.desc}</div>
+              </div>
+            `,
+          )}
+        </div>
+
+        <p class="mt-6 text-center text-xs text-[hsl(var(--muted-fg))]">© 2026 An Việt Phát Group</p>
       </div>
     </div>
   `;
-  return page({ title: 'Đăng nhập', user, body, bodyClass: 'bg-white', noChrome: true });
+  return page({ title: 'Đăng nhập', user, body, bodyClass: 'bg-[hsl(0_0%_100%)] dark:bg-[hsl(0_0%_14.9%)]', noChrome: true });
 }
 
 // ---------- App dashboard ----------

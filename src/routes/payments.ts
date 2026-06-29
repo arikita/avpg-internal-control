@@ -142,22 +142,26 @@ paymentRoutes.use('*', async (c, next) => {
 });
 
 // Badge trạng thái cho danh sách.
-function prStatusBadge(status: string, stage: number, stages: string[]): ReturnType<typeof html> {
+function prStatusBadge(status: string, stage: number, stages: string[], signedDone = false): ReturnType<typeof html> {
   if (status === 'cancelled')
     return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-600">Đã huỷ</span>`;
   if (status === 'paid')
     return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800">Đã thanh toán</span>`;
+  if (signedDone)
+    return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800">Đã ký xong · chờ thanh toán</span>`;
   if (status === 'draft')
     return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-700">Nháp</span>`;
   return html`<span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Đang ở: ${esc(stages[stage] ?? '?')}</span>`;
 }
 
 // Thanh stepper 6 chặng.
-function stepper(stage: number, cancelled: boolean, stages: string[]): ReturnType<typeof html> {
+function stepper(stage: number, cancelled: boolean, stages: string[], signedDone = false): ReturnType<typeof html> {
+  // Đã ký xong (chưa thanh toán): coi như đang ở chặng cuối "Đã thanh toán" → 0..4 done.
+  const effStage = signedDone ? LAST_STAGE : stage;
   return html`<div class="flex flex-wrap items-center gap-1.5">
     ${stages.map((label, i) => {
-      const done = !cancelled && i < stage;
-      const current = !cancelled && i === stage;
+      const done = !cancelled && i < effStage;
+      const current = !cancelled && i === effStage;
       const cls = cancelled
         ? 'bg-slate-100 text-slate-400'
         : done
@@ -204,7 +208,7 @@ paymentRoutes.get('/', async (c) => {
     (
       await c.env.DB.prepare(
         `SELECT id, code, status, current_stage, mid_order, creator_name, creator_email, dept_code,
-                payee_name, purpose, total_amount, created_at,
+                payee_name, purpose, total_amount, created_at, documenso_status,
                 ${lastNote('l.note')} AS last_note,
                 ${lastNote('COALESCE(l.actor_name, l.actor_email)')} AS last_note_by,
                 ${lastNote('l.acted_at')} AS last_note_at
@@ -287,7 +291,7 @@ function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }
               </td>
               <td class="px-3 py-2 align-top text-right font-medium whitespace-nowrap">${money(r.total_amount)}</td>
               <td class="px-3 py-2 align-top text-slate-600 whitespace-nowrap">${esc(r.creator_name ?? r.creator_email)}</td>
-              <td class="px-3 py-2 align-top whitespace-nowrap">${prStatusBadge(r.status, Number(r.current_stage), prStages(r.mid_order))}</td>
+              <td class="px-3 py-2 align-top whitespace-nowrap">${prStatusBadge(r.status, Number(r.current_stage), prStages(r.mid_order), r.documenso_status === 'COMPLETED' && r.status !== 'paid' && r.status !== 'cancelled')}</td>
               <td class="px-3 py-2 align-top">
                 ${r.last_note
                   ? html`<div class="text-xs text-slate-600 break-words">${esc(r.last_note)}</div>
@@ -766,6 +770,8 @@ function detailBody(
   // Phiếu đã gửi ký điện tử qua Documenso → chặng do webhook lái, KHÓA nút chỉnh tay.
   const hasEnvelope = !!pr.documenso_envelope_id;
   const signCompleted = pr.documenso_status === 'COMPLETED';
+  // Đã ký xong điện tử nhưng chưa đánh dấu thanh toán → hiển thị "Đã ký xong · chờ thanh toán".
+  const signedDone = signCompleted && pr.status !== 'paid' && !cancelled;
   const canAdvance = !cancelled && !hasEnvelope && stage < LAST_STAGE;
   // Sau Trưởng bộ phận ký: hồ sơ đi KSNB hoặc Kế toán tuỳ bên nào nhận trước.
   const pickMid = canAdvance && stage === 1;
@@ -802,11 +808,11 @@ function detailBody(
             <div class="text-2xl font-bold text-blue-900">${esc(pr.code ?? '(nháp)')}</div>
             <div class="text-xs text-slate-400 mt-0.5">Tạo bởi ${esc(pr.creator_name ?? pr.creator_email)} · ${vnDisplay(pr.created_at)}</div>
           </div>
-          <div>${prStatusBadge(pr.status, stage, stages)}</div>
+          <div>${prStatusBadge(pr.status, stage, stages, signedDone)}</div>
         </div>
 
         <!-- Stepper lớn -->
-        <div class="mb-5 p-3 bg-slate-50 rounded-lg">${stepper(stage, cancelled, stages)}</div>
+        <div class="mb-5 p-3 bg-slate-50 rounded-lg">${stepper(stage, cancelled, stages, signedDone)}</div>
 
         <div class="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <div><span class="text-slate-500">Người thanh toán:</span> <b>${esc(pr.payee_name)}</b></div>

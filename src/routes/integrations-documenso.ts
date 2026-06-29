@@ -93,9 +93,14 @@ documensoRoutes.post('/webhook', async (c) => {
   const justSigned: Array<{ role: string; name: string }> = []; // người vừa ký ở webhook này (cho Ghi chú)
   for (const r of recips) {
     if ((r.signingStatus ?? '') !== 'SIGNED') continue;
+    // Match theo recipient_id (so sánh SỐ — pg trả bigint dạng string nên ép Number, tránh
+    // "12"===12 false rồi rơi xuống email). Chỉ fallback email khi signer CHƯA có recipient_id
+    // (tránh nhầm khi 1 người kiêm nhiều vai trùng email — vd KSNB & BOD cùng email).
     const match =
-      signers.find((s) => r.id != null && s.recipient_id === r.id) ??
-      signers.find((s) => (r.email ?? '').toLowerCase() === s.email.toLowerCase());
+      (r.id != null
+        ? signers.find((s) => s.recipient_id != null && Number(s.recipient_id) === Number(r.id))
+        : undefined) ??
+      signers.find((s) => s.recipient_id == null && (r.email ?? '').toLowerCase() === s.email.toLowerCase());
     if (match && !match.signed_at) {
       const at = r.signedAt || now;
       match.signed_at = at;

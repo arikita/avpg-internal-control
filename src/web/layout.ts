@@ -162,7 +162,7 @@ export async function page({ title, user, body, bodyClass = 'bg-background text-
       --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%;
       --primary: 49 74% 53%;      --primary-fg: 49 74% 10%;
       --accent: 210 40% 96.1%;    --accent-fg: 222.2 47.4% 11.2%;
-      --ring: 49 74% 53%;
+      --ring: 49 74% 53%;         --link: 42 70% 34%;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -172,7 +172,7 @@ export async function page({ title, user, body, bodyClass = 'bg-background text-
         --border: 0 0% 27.9%;      --input: 0 0% 27.9%;
         --primary: 49 74% 53%;     --primary-fg: 49 74% 10%;
         --accent: 0 0% 23.4%;      --accent-fg: 0 0% 95%;
-        --ring: 49 74% 53%;
+        --ring: 49 74% 53%;        --link: 49 74% 62%;
       }
     }
     @layer components {
@@ -181,25 +181,39 @@ export async function page({ title, user, body, bodyClass = 'bg-background text-
       .av-btn-secondary { @apply inline-flex items-center justify-center gap-2 rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted; }
       .av-input { @apply w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 focus:ring-offset-background; }
     }
-    /* Lớp tương thích: trang chưa refactor vẫn đổi tông đúng ở dark (và bớt lệch ở light). */
+    /* Form controls native theo token (fix input nền trắng ở dark; light giữ nguyên trắng). */
+    @layer base {
+      input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]),
+      textarea, select {
+        background-color: hsl(var(--bg));
+        color: hsl(var(--fg));
+        border-color: hsl(var(--border));
+      }
+      input::placeholder, textarea::placeholder { color: hsl(var(--muted-fg)); opacity: 1; }
+    }
+    /* ===== Re-skin on-tone cho class literal cũ (light + dark) — ưu tiên tầng dùng chung =====
+       Dùng attribute selector [class*=] để né lỗi escape '\:' trong template literal. */
+    [class*="text-blue-"] { color: hsl(var(--link)) !important; }
+    [class*="bg-blue-9"], [class*="bg-blue-8"], [class*="bg-blue-7"], [class*="bg-blue-6"] { background-color: hsl(var(--primary)) !important; color: hsl(var(--primary-fg)) !important; }
+    [class*="from-blue-"] { background-image: none !important; background-color: hsl(var(--primary)) !important; color: hsl(var(--primary-fg)) !important; }
+    [class*="bg-blue-50"], [class*="bg-blue-100"] { background-color: hsl(var(--accent)) !important; }
+    [class*="border-blue-"] { border-color: hsl(var(--border)) !important; }
+    [class*="ring-blue-"] { --tw-ring-color: hsl(var(--ring)) !important; }
+    /* Header bảng/khối nền gradient slate → phẳng muted (tự flip theo dark) */
+    [class*="from-slate-50"], [class*="from-slate-100"] { background-image: none !important; background-color: hsl(var(--muted)) !important; }
+    /* ===== Dark: lật bề mặt/chữ neutral (slate/white) sang tối ===== */
     @media (prefers-color-scheme: dark) {
-      .bg-white { background-color: hsl(var(--card)) !important; }
-      .bg-slate-50 { background-color: hsl(0 0% 11%) !important; }
-      .bg-slate-100 { background-color: hsl(0 0% 18%) !important; }
-      .bg-slate-100\/60, .bg-slate-50\/60 { background-color: hsl(0 0% 18% / 0.6) !important; }
-      .bg-slate-200 { background-color: hsl(0 0% 24%) !important; }
+      [class*="bg-white"] { background-color: hsl(var(--card)) !important; }
+      [class*="bg-slate-50"] { background-color: hsl(0 0% 11%) !important; }
+      [class*="bg-slate-100"] { background-color: hsl(0 0% 18%) !important; }
+      [class*="bg-slate-200"] { background-color: hsl(0 0% 24%) !important; }
       .text-slate-900, .text-slate-800, .text-slate-700 { color: hsl(0 0% 95%) !important; }
       .text-slate-600, .text-slate-500 { color: hsl(0 0% 72%) !important; }
       .text-slate-400 { color: hsl(0 0% 58%) !important; }
-      .border-slate-200, .border-slate-100, .border-slate-300 { border-color: hsl(var(--border)) !important; }
-      .ring-slate-200, .ring-slate-100 { --tw-ring-color: hsl(var(--border)) !important; }
+      [class*="border-slate-"] { border-color: hsl(var(--border)) !important; }
+      [class*="ring-slate-"] { --tw-ring-color: hsl(var(--border)) !important; }
       .divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)) !important; }
-      .hover\:bg-slate-50:hover, .hover\:bg-blue-50:hover, .hover\:bg-slate-100:hover { background-color: hsl(0 0% 20%) !important; }
-      /* chữ/nền xanh accent → dễ đọc trên nền tối */
-      .text-blue-900, .text-blue-800, .text-blue-700, .text-blue-600 { color: hsl(49 74% 62%) !important; }
-      .bg-blue-50, .bg-blue-100 { background-color: hsl(0 0% 20%) !important; }
-      .border-blue-200, .border-blue-300 { border-color: hsl(var(--border)) !important; }
-      .bg-blue-50\/40 { background-color: hsl(49 74% 53% / 0.12) !important; }
+      [class*="hover:bg-slate-"]:hover, [class*="hover:bg-blue-"]:hover { background-color: hsl(0 0% 20%) !important; }
     }
   </style>
   <script>

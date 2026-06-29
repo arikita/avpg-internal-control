@@ -90,6 +90,7 @@ documensoRoutes.post('/webhook', async (c) => {
     ).results ?? [];
 
   const now = nowIso();
+  const justSigned: Array<{ role: string; name: string }> = []; // người vừa ký ở webhook này (cho Ghi chú)
   for (const r of recips) {
     if ((r.signingStatus ?? '') !== 'SIGNED') continue;
     const match =
@@ -98,6 +99,7 @@ documensoRoutes.post('/webhook', async (c) => {
     if (match && !match.signed_at) {
       const at = r.signedAt || now;
       match.signed_at = at;
+      justSigned.push({ role: match.role, name: match.name || match.email });
       await c.env.DB.prepare(`UPDATE payment_request_signer SET signed_at = ?2 WHERE id = ?1`)
         .bind(match.id, at)
         .run();
@@ -189,11 +191,18 @@ documensoRoutes.post('/webhook', async (c) => {
 
     if (stageChanged) {
       const label = completed ? 'Đã ký xong (chờ thanh toán)' : (stages[newStage] ?? '?');
+      // Ghi chú có nghĩa cho cột theo dõi: ai vừa ký → đang chờ chặng nào (thay vì tên sự kiện thô).
+      const signedWho = justSigned.map((s) => ROLE_LABEL[s.role] ?? s.role).join(', ');
+      const note = completed
+        ? `${signedWho ? `${signedWho} đã ký · ` : ''}Đã ký xong — chờ thanh toán`
+        : signedWho
+          ? `${signedWho} đã ký — đang chờ ${stages[newStage] ?? '?'}`
+          : `Đang chờ ${stages[newStage] ?? '?'}`;
       await c.env.DB.prepare(
         `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
          VALUES (?1,?2,?3,'advance',?4,?5,?6)`,
       )
-        .bind(pr.id, newStage, label, 'documenso@system', 'Documenso', `Cập nhật từ Documenso (${event})`)
+        .bind(pr.id, newStage, label, 'documenso@system', 'Documenso', note)
         .run();
       await logAudit(c.env, {
         eventType: 'pr_advance',

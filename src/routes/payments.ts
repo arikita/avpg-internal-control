@@ -22,8 +22,48 @@ import {
   type DocumensoSigner,
 } from '../lib/documenso';
 import { countPdfPages, pdfRenderConfigured, renderPaymentPdf } from '../lib/payment-pdf';
+import { VN_BANKS } from '../lib/vn-banks';
 
 export const paymentRoutes = new Hono<AppEnv>();
+
+// ---- Sổ tài khoản thụ hưởng (dùng chung): nhập 1 lần, lần sau chọn từ dropdown ----
+type Beneficiary = { id: number; account_name: string; account_no: string; bank_name: string };
+
+// Lấy danh sách tài khoản đã lưu, ưu tiên tài khoản hay dùng / mới dùng gần đây.
+async function loadBeneficiaries(db: AppEnv['Bindings']['DB']): Promise<Beneficiary[]> {
+  const r = await db
+    .prepare(
+      `SELECT id, account_name, account_no, bank_name
+         FROM payment_beneficiary
+        ORDER BY use_count DESC, last_used_at DESC
+        LIMIT 200`,
+    )
+    .all<Beneficiary>();
+  return r.results ?? [];
+}
+
+// Lưu/cập nhật tài khoản thụ hưởng sau khi tạo/sửa phiếu (chỉ khi nhận tiền bằng CK
+// và có đủ tên chủ TK + số TK). Trùng (số TK + ngân hàng) → tăng use_count, không nhân bản.
+async function upsertBeneficiary(
+  db: AppEnv['Bindings']['DB'],
+  data: { account_name: string | null; account_no: string | null; bank_name: string | null; email: string },
+): Promise<void> {
+  const accountName = (data.account_name ?? '').trim();
+  const accountNo = (data.account_no ?? '').trim();
+  const bankName = (data.bank_name ?? '').trim();
+  if (!accountName || !accountNo) return;
+  await db
+    .prepare(
+      `INSERT INTO payment_beneficiary (account_name, account_no, bank_name, created_by)
+       VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT (account_no, bank_name)
+       DO UPDATE SET account_name = EXCLUDED.account_name,
+                     use_count = payment_beneficiary.use_count + 1,
+                     last_used_at = iso_now()`,
+    )
+    .bind(accountName, accountNo, bankName, data.email)
+    .run();
+}
 
 // Chuỗi chặng. current_stage = chặng phiếu ĐANG ở (chờ bên đó ký).
 // Cặp chặng 2-3 (KSNB & Kế toán) ký theo thứ tự tuỳ thực tế: bên nào nhận hồ sơ
@@ -314,11 +354,12 @@ function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }
 }
 
 // ============================ FORM TẠO / SỬA ============================
-paymentRoutes.get('/new', (c) => {
+paymentRoutes.get('/new', async (c) => {
   const user = c.get('user')!;
   if (!user.deptCode)
     throw unprocessable('Tài khoản chưa được gán phòng ban. Liên hệ quản trị hệ thống.', 'no_department');
-  return c.html(page({ title: 'Tạo đề nghị thanh toán', user, body: formBody(user, null) }));
+  const beneficiaries = await loadBeneficiaries(c.env.DB);
+  return c.html(page({ title: 'Tạo đề nghị thanh toán', user, body: formBody(user, null, beneficiaries) }));
 });
 
 paymentRoutes.get('/:id{[0-9]+}/edit', async (c) => {
@@ -339,13 +380,30 @@ paymentRoutes.get('/:id{[0-9]+}/edit', async (c) => {
         .bind(id)
         .all<PrItem>()
     ).results ?? [];
-  return c.html(page({ title: `Sửa ${pr.code ?? 'phiếu'}`, user, body: formBody(user, { pr, items }) }));
+  const beneficiaries = await loadBeneficiaries(c.env.DB);
+  return c.html(page({ title: `Sửa ${pr.code ?? 'phiếu'}`, user, body: formBody(user, { pr, items }, beneficiaries) }));
 });
 
-function formBody(me: SessionUser, existing: { pr: PrRow; items: PrItem[] } | null) {
+function formBody(
+  me: SessionUser,
+  existing: { pr: PrRow; items: PrItem[] } | null,
+  beneficiaries: Beneficiary[] = [],
+) {
   const pr = existing?.pr ?? null;
   const action = pr ? `/payments/${pr.id}` : '/payments';
   const cancelHref = pr ? `/payments/${pr.id}` : '/payments';
+  // Trạng thái khối ngân hàng cho Alpine (dropdown đã lưu + các ô bound).
+  const bankInit = {
+    name: pr?.bank_account_name ?? '',
+    no: pr?.bank_account_no ?? '',
+    bank: pr?.bank_name ?? '',
+    note: pr?.transfer_note ?? '',
+  };
+  const benefJson = JSON.stringify(beneficiaries);
+  const bankInitJson = JSON.stringify(bankInit);
+  // Tên ngân hàng đang lưu nhưng không có trong danh sách chuẩn (dữ liệu cũ) → thêm option để không mất.
+  const bankShorts = new Set(VN_BANKS.map((b) => b.short));
+  const extraBank = bankInit.bank && !bankShorts.has(bankInit.bank) ? bankInit.bank : null;
   const itemsJson = JSON.stringify(
     existing && existing.items.length
       ? existing.items.map((it) => ({
@@ -447,17 +505,31 @@ function formBody(me: SessionUser, existing: { pr: PrRow; items: PrItem[] } | nu
               )}
             </select>
           </label>
+          <label class="flex flex-col gap-1 text-sm md:col-span-2">Thông tin chuyển khoản (đã lưu)
+            <select x-model="selBenef" @change="applyBenef()" class="px-3 py-2 border border-slate-300 rounded-md bg-white">
+              <option value="">— Chọn tài khoản đã lưu —</option>
+              <template x-for="b in beneficiaries" :key="b.id">
+                <option :value="String(b.id)" x-text="benefLabel(b)"></option>
+              </template>
+              <option value="__new__">+ Thêm mới…</option>
+            </select>
+            <span class="text-xs text-slate-400">Chọn để điền nhanh, hoặc “+ Thêm mới” rồi nhập — tài khoản mới tự lưu cho lần sau.</span>
+          </label>
           <label class="flex flex-col gap-1 text-sm">Tên chủ tài khoản
-            <input name="bank_account_name" value="${v(pr?.bank_account_name)}" class="px-3 py-2 border border-slate-300 rounded-md" />
+            <input name="bank_account_name" x-model="bank.name" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
           <label class="flex flex-col gap-1 text-sm">Số tài khoản người nhận
-            <input name="bank_account_no" value="${v(pr?.bank_account_no)}" class="px-3 py-2 border border-slate-300 rounded-md" />
+            <input name="bank_account_no" x-model="bank.no" inputmode="numeric" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
           <label class="flex flex-col gap-1 text-sm">Ngân hàng
-            <input name="bank_name" value="${v(pr?.bank_name)}" class="px-3 py-2 border border-slate-300 rounded-md" />
+            <select name="bank_name" x-model="bank.bank" class="px-3 py-2 border border-slate-300 rounded-md bg-white">
+              <option value="">— Chọn ngân hàng —</option>
+              ${extraBank ? html`<option value="${esc(extraBank)}">${esc(extraBank)}</option>` : ''}
+              ${VN_BANKS.map((b) => html`<option value="${esc(b.short)}">${esc(b.full)}</option>`)}
+            </select>
           </label>
           <label class="flex flex-col gap-1 text-sm">Nội dung CK
-            <input name="transfer_note" value="${v(pr?.transfer_note)}" class="px-3 py-2 border border-slate-300 rounded-md" />
+            <input name="transfer_note" x-model="bank.note" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
         </div>
 
@@ -473,6 +545,21 @@ function formBody(me: SessionUser, existing: { pr: PrRow; items: PrItem[] } | nu
       function prForm() {
         return {
           items: ${raw(itemsJson.replace(/</g, '\\u003c'))},
+          beneficiaries: ${raw(benefJson.replace(/</g, '\\u003c'))},
+          bank: ${raw(bankInitJson.replace(/</g, '\\u003c'))},
+          selBenef: '',
+          init() {
+            // Phiếu đang sửa: nếu tài khoản hiện tại khớp một bản đã lưu thì chọn sẵn nó.
+            var b = this.beneficiaries.find((x) => String(x.account_no) === String(this.bank.no) && (x.bank_name || '') === (this.bank.bank || ''));
+            this.selBenef = b ? String(b.id) : '';
+          },
+          benefLabel(b) { return b.account_name + ' · ' + b.account_no + (b.bank_name ? ' · ' + b.bank_name : ''); },
+          applyBenef() {
+            if (this.selBenef === '__new__') { this.bank = { name: '', no: '', bank: '', note: '' }; return; }
+            if (this.selBenef === '') return;
+            var b = this.beneficiaries.find((x) => String(x.id) === String(this.selBenef));
+            if (b) { this.bank.name = b.account_name || ''; this.bank.no = b.account_no || ''; this.bank.bank = b.bank_name || ''; }
+          },
           addRow() { this.items.push({ description: '', unit_price: '', qty: '', currency: 'VND', note: '' }); },
           removeRow(i) { this.items.splice(i, 1); if (!this.items.length) this.addRow(); },
           num(s) { return Number(String(s == null ? '' : s).replace(/[^\\d]/g, '')) || 0; },
@@ -592,6 +679,13 @@ paymentRoutes.post('/', async (c) => {
     .first<{ id: number }>();
   const id = ins!.id;
   await insertItems(c.env.DB, id, items);
+  if (String(b.receive_form ?? 'CK').trim() === 'CK')
+    await upsertBeneficiary(c.env.DB, {
+      account_name: String(b.bank_account_name ?? ''),
+      account_no: String(b.bank_account_no ?? ''),
+      bank_name: String(b.bank_name ?? ''),
+      email: user.email,
+    });
   await c.env.DB.prepare(
     `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
      VALUES (?1, 0, ?2, 'create', ?3, ?4, ?5)`,
@@ -663,6 +757,13 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
     .run();
   await c.env.DB.prepare(`DELETE FROM payment_request_item WHERE pr_id = ?1`).bind(id).run();
   await insertItems(c.env.DB, id, items);
+  if (String(b.receive_form ?? 'CK').trim() === 'CK')
+    await upsertBeneficiary(c.env.DB, {
+      account_name: String(b.bank_account_name ?? ''),
+      account_no: String(b.bank_account_no ?? ''),
+      bank_name: String(b.bank_name ?? ''),
+      email: user.email,
+    });
   return c.redirect(`/payments/${id}`);
 });
 

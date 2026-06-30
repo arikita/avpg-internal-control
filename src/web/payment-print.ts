@@ -110,6 +110,11 @@ export function paymentPrintPage(
 <body>
   <div class="print-bar">
     <a href="/payments/${s(pr.id)}">← Quay lại phiếu</a>
+    <label style="display:inline-flex; align-items:center; gap:6px; font-size:14px; color:#1e293b; cursor:pointer">
+      <input type="checkbox" id="toggle-logo" checked
+        onchange="document.getElementById('avpg-logo').style.visibility = this.checked ? 'visible' : 'hidden'" />
+      Hiện logo AVP Group
+    </label>
     <button class="primary" onclick="window.print()">🖨 In phiếu</button>
   </div>
   <div class="sheet">
@@ -123,7 +128,7 @@ export function paymentPrintPage(
 
       <!-- ===== HEADER: logo | tiêu đề | mã kiểm soát ===== -->
       <tr style="height:18mm">
-        <td colspan="4" class="br bb c" style="vertical-align:middle"><img class="logo" src="${AVPG_LOGO_DATA_URL}" alt="AVPG" /></td>
+        <td colspan="4" class="br bb c" style="vertical-align:middle"><img id="avpg-logo" class="logo" src="${AVPG_LOGO_DATA_URL}" alt="AVPG" /></td>
         <td colspan="5" class="br bb" style="vertical-align:middle"><div class="title">GIẤY ĐỀ NGHỊ THANH TOÁN</div></td>
         <td colspan="2" class="bb" style="padding:0">
           <table class="ctrl">

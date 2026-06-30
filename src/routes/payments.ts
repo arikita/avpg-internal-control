@@ -135,6 +135,7 @@ type PrRow = {
   bank_account_no: string | null;
   bank_name: string | null;
   transfer_note: string | null;
+  from_company: string | null;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -531,6 +532,9 @@ function formBody(
           <label class="flex flex-col gap-1 text-sm">Nội dung CK
             <input name="transfer_note" x-model="bank.note" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
+          <label class="flex flex-col gap-1 text-sm md:col-span-2">Đi từ công ty
+            <input name="from_company" value="${v(pr?.from_company)}" class="px-3 py-2 border border-slate-300 rounded-md" />
+          </label>
         </div>
 
         <input type="hidden" name="items_json" x-ref="items_json" />
@@ -654,8 +658,8 @@ paymentRoutes.post('/', async (c) => {
     `INSERT INTO payment_request
        (code, status, current_stage, creator_user_id, creator_email, creator_name, dept_code,
         payee_name, payee_title, purpose, total_amount, amount_words,
-        pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note)
-     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+        pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note, from_company)
+     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
      RETURNING id`,
   )
     .bind(
@@ -675,6 +679,7 @@ paymentRoutes.post('/', async (c) => {
       String(b.bank_account_no ?? '').trim() || null,
       String(b.bank_name ?? '').trim() || null,
       String(b.transfer_note ?? '').trim() || null,
+      String(b.from_company ?? '').trim() || null,
     )
     .first<{ id: number }>();
   const id = ins!.id;
@@ -737,7 +742,7 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
     `UPDATE payment_request SET
        payee_name=?2, payee_title=?3, purpose=?4, total_amount=?5, amount_words=?6,
        pay_form=?7, receive_form=?8, bank_account_name=?9, bank_account_no=?10, bank_name=?11,
-       transfer_note=?12, updated_at=iso_now()
+       transfer_note=?12, from_company=?13, updated_at=iso_now()
      WHERE id=?1`,
   )
     .bind(
@@ -753,6 +758,7 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
       String(b.bank_account_no ?? '').trim() || null,
       String(b.bank_name ?? '').trim() || null,
       String(b.transfer_note ?? '').trim() || null,
+      String(b.from_company ?? '').trim() || null,
     )
     .run();
   await c.env.DB.prepare(`DELETE FROM payment_request_item WHERE pr_id = ?1`).bind(id).run();
@@ -963,6 +969,7 @@ function detailBody(
           <div><span class="text-slate-500">Số TK:</span> ${esc(pr.bank_account_no ?? '')}</div>
           <div><span class="text-slate-500">Ngân hàng:</span> ${esc(pr.bank_name ?? '')}</div>
           <div><span class="text-slate-500">Nội dung CK:</span> ${esc(pr.transfer_note ?? '')}</div>
+          <div><span class="text-slate-500">Đi từ công ty:</span> ${esc(pr.from_company ?? '')}</div>
         </div>
       </div>
 

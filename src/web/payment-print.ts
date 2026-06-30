@@ -211,7 +211,7 @@ export function paymentPrintPage(
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Tên chủ tài khoản: ${s(pr.bank_account_name)}</td></tr>
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Số tài khoản người nhận: ${s(pr.bank_account_no)}${pr.bank_name ? html` — ${s(pr.bank_name)}` : ''}</td></tr>
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Nội dung CK: ${s(pr.transfer_note)}</td></tr>
-      <tr style="height:13mm"><td colspan="11" class="bb" style="vertical-align:top">Đi từ công ty:</td></tr>
+      <tr style="height:13mm"><td colspan="11" class="bb" style="vertical-align:top">Đi từ công ty: ${s(pr.from_company)}</td></tr>
 
       <!-- ===== CHỮ KÝ (bản in giấy: trong luồng bảng) ===== -->
       ${forSign ? '' : html`<tr>

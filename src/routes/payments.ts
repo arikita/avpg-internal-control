@@ -26,14 +26,35 @@ import { VN_BANKS } from '../lib/vn-banks';
 
 export const paymentRoutes = new Hono<AppEnv>();
 
+// Đính kèm hồ sơ DNTT — cùng giới hạn với hồ sơ mua hàng (procurement_attachment).
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB/file
+const ATTACH_ALLOWED_MIME = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // xlsx
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
+  'application/msword',
+  'application/vnd.ms-excel',
+]);
+
 // ---- Sổ tài khoản thụ hưởng (dùng chung): nhập 1 lần, lần sau chọn từ dropdown ----
-type Beneficiary = { id: number; account_name: string; account_no: string; bank_name: string };
+// Feature 2: kèm địa chỉ + MST đối tượng nhận tiền (NCC/KH) → chọn TK đã lưu tự điền luôn.
+type Beneficiary = {
+  id: number;
+  account_name: string;
+  account_no: string;
+  bank_name: string;
+  address: string;
+  tax_code: string;
+};
 
 // Lấy danh sách tài khoản đã lưu, ưu tiên tài khoản hay dùng / mới dùng gần đây.
 async function loadBeneficiaries(db: AppEnv['Bindings']['DB']): Promise<Beneficiary[]> {
   const r = await db
     .prepare(
-      `SELECT id, account_name, account_no, bank_name
+      `SELECT id, account_name, account_no, bank_name, address, tax_code
          FROM payment_beneficiary
         ORDER BY use_count DESC, last_used_at DESC
         LIMIT 200`,
@@ -42,26 +63,66 @@ async function loadBeneficiaries(db: AppEnv['Bindings']['DB']): Promise<Benefici
   return r.results ?? [];
 }
 
+// Feature 3: danh mục công ty chi tiền (đơn vị trực thuộc AVP Group) + các giá trị cũ đã nhập tay,
+// gộp lại để dropdown "Đi từ công ty" không mất dữ liệu cũ.
+async function loadCompanies(db: AppEnv['Bindings']['DB'], currentValue?: string | null): Promise<string[]> {
+  const cat = (
+    await db
+      .prepare(`SELECT name FROM payment_company WHERE active = 1 ORDER BY sort_order ASC, name ASC`)
+      .all<{ name: string }>()
+  ).results ?? [];
+  const prev = (
+    await db
+      .prepare(
+        `SELECT DISTINCT from_company AS name FROM payment_request
+          WHERE from_company IS NOT NULL AND from_company <> '' ORDER BY from_company ASC`,
+      )
+      .all<{ name: string }>()
+  ).results ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const n of [...cat, ...prev, ...(currentValue ? [{ name: currentValue }] : [])]) {
+    const v = (n.name ?? '').trim();
+    if (v && !seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 // Lưu/cập nhật tài khoản thụ hưởng sau khi tạo/sửa phiếu (chỉ khi nhận tiền bằng CK
 // và có đủ tên chủ TK + số TK). Trùng (số TK + ngân hàng) → tăng use_count, không nhân bản.
 async function upsertBeneficiary(
   db: AppEnv['Bindings']['DB'],
-  data: { account_name: string | null; account_no: string | null; bank_name: string | null; email: string },
+  data: {
+    account_name: string | null;
+    account_no: string | null;
+    bank_name: string | null;
+    address?: string | null;
+    tax_code?: string | null;
+    email: string;
+  },
 ): Promise<void> {
   const accountName = (data.account_name ?? '').trim();
   const accountNo = (data.account_no ?? '').trim();
   const bankName = (data.bank_name ?? '').trim();
+  const address = (data.address ?? '').trim();
+  const taxCode = (data.tax_code ?? '').trim();
   if (!accountName || !accountNo) return;
+  // Trùng (số TK + ngân hàng): tăng use_count; địa chỉ/MST chỉ ghi đè khi lần này có nhập (giữ dữ liệu cũ).
   await db
     .prepare(
-      `INSERT INTO payment_beneficiary (account_name, account_no, bank_name, created_by)
-       VALUES (?1, ?2, ?3, ?4)
+      `INSERT INTO payment_beneficiary (account_name, account_no, bank_name, address, tax_code, created_by)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
        ON CONFLICT (account_no, bank_name)
        DO UPDATE SET account_name = EXCLUDED.account_name,
+                     address = CASE WHEN EXCLUDED.address <> '' THEN EXCLUDED.address ELSE payment_beneficiary.address END,
+                     tax_code = CASE WHEN EXCLUDED.tax_code <> '' THEN EXCLUDED.tax_code ELSE payment_beneficiary.tax_code END,
                      use_count = payment_beneficiary.use_count + 1,
                      last_used_at = iso_now()`,
     )
-    .bind(accountName, accountNo, bankName, data.email)
+    .bind(accountName, accountNo, bankName, address, taxCode, data.email)
     .run();
 }
 
@@ -135,7 +196,10 @@ type PrRow = {
   bank_account_no: string | null;
   bank_name: string | null;
   transfer_note: string | null;
+  beneficiary_address: string | null;
+  beneficiary_tax_code: string | null;
   from_company: string | null;
+  due_date: string | null;
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -216,30 +280,57 @@ function stepper(stage: number, cancelled: boolean, stages: string[], signedDone
 }
 
 // ============================ DANH SÁCH / THEO DÕI ============================
-paymentRoutes.get('/', async (c) => {
-  const user = c.get('user')!;
-  const scope = c.req.query('scope') ?? 'all'; // all | mine
-  const st = c.req.query('st') ?? 'open'; // open | paid | cancelled | all
-  const q = (c.req.query('q') ?? '').trim();
-
+type PrFilter = { scope: string; st: string; q: string; from: string; to: string; company: string };
+function readPrFilter(c: Context<AppEnv>): PrFilter {
+  return {
+    scope: c.req.query('scope') ?? 'all', // all | mine
+    st: c.req.query('st') ?? 'open', // open | paid | cancelled | all
+    q: (c.req.query('q') ?? '').trim(),
+    from: (c.req.query('from') ?? '').trim(), // yyyy-mm-dd theo ngày tạo
+    to: (c.req.query('to') ?? '').trim(),
+    company: (c.req.query('company') ?? '').trim(),
+  };
+}
+// Dựng WHERE + params từ filter. `ignoreStatus` = true để tính dashboard (đếm mọi trạng thái).
+function buildPrWhere(userEmail: string, f: PrFilter, ignoreStatus = false): { where: string; params: unknown[] } {
   const conds: string[] = [];
   const params: unknown[] = [];
   let n = 0;
-  if (scope === 'mine') {
+  if (f.scope === 'mine') {
     conds.push(`LOWER(creator_email) = ?${++n}`);
-    params.push(user.email.toLowerCase());
+    params.push(userEmail.toLowerCase());
   }
-  if (st === 'open') conds.push(`status IN ('draft','in_progress')`);
-  else if (st === 'paid') conds.push(`status = 'paid'`);
-  else if (st === 'cancelled') conds.push(`status = 'cancelled'`);
-  if (q) {
+  if (!ignoreStatus) {
+    if (f.st === 'open') conds.push(`status IN ('draft','in_progress')`);
+    else if (f.st === 'paid') conds.push(`status = 'paid'`);
+    else if (f.st === 'cancelled') conds.push(`status = 'cancelled'`);
+  }
+  if (f.q) {
     conds.push(`(LOWER(code) LIKE ?${++n} OR LOWER(payee_name) LIKE ?${n} OR LOWER(purpose) LIKE ?${n})`);
-    params.push(`%${q.toLowerCase()}%`);
+    params.push(`%${f.q.toLowerCase()}%`);
   }
-  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  if (f.company) {
+    conds.push(`from_company = ?${++n}`);
+    params.push(f.company);
+  }
+  if (f.from) {
+    conds.push(`substr(created_at,1,10) >= ?${++n}`);
+    params.push(f.from);
+  }
+  if (f.to) {
+    conds.push(`substr(created_at,1,10) <= ?${++n}`);
+    params.push(f.to);
+  }
+  return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
+}
+
+type PrSummary = { draft: number; in_progress: number; paid: number; cancelled: number; openTotal: number };
+
+paymentRoutes.get('/', async (c) => {
+  const user = c.get('user')!;
+  const f = readPrFilter(c);
+  const { where, params } = buildPrWhere(user.email, f);
   // Ghi chú trình ký mới nhất (ai đang giữ hồ sơ / tình trạng) cho cột Ghi chú.
-  // Chỉ lấy kind advance/note — là 2 kind có ghi chú người dùng nhập tay;
-  // create/revert/cancel chèn note tự động ('Tạo phiếu'...) không có giá trị theo dõi.
   const lastNote = (expr: string) =>
     `(SELECT ${expr} FROM payment_request_stage_log l
        WHERE l.pr_id = payment_request.id AND l.kind IN ('advance','note')
@@ -249,7 +340,7 @@ paymentRoutes.get('/', async (c) => {
     (
       await c.env.DB.prepare(
         `SELECT id, code, status, current_stage, mid_order, creator_name, creator_email, dept_code,
-                payee_name, purpose, total_amount, created_at, documenso_status,
+                payee_name, purpose, total_amount, from_company, due_date, created_at, documenso_status,
                 ${lastNote('l.note')} AS last_note,
                 ${lastNote('COALESCE(l.actor_name, l.actor_email)')} AS last_note_by,
                 ${lastNote('l.acted_at')} AS last_note_at
@@ -260,23 +351,95 @@ paymentRoutes.get('/', async (c) => {
         .all<PrListRow>()
     ).results ?? [];
 
+  // Dashboard: đếm theo trạng thái (bỏ qua tab st, giữ scope/công ty/ngày/tìm).
+  const agg = buildPrWhere(user.email, f, true);
+  const stat =
+    (
+      await c.env.DB.prepare(
+        `SELECT status, COUNT(*) AS cnt, COALESCE(SUM(total_amount),0) AS sum_amount
+           FROM payment_request ${agg.where} GROUP BY status`,
+      )
+        .bind(...agg.params)
+        .all<{ status: string; cnt: number; sum_amount: number }>()
+    ).results ?? [];
+  const summary: PrSummary = { draft: 0, in_progress: 0, paid: 0, cancelled: 0, openTotal: 0 };
+  for (const s of stat) {
+    if (s.status === 'draft') summary.draft = Number(s.cnt);
+    else if (s.status === 'in_progress') summary.in_progress = Number(s.cnt);
+    else if (s.status === 'paid') summary.paid = Number(s.cnt);
+    else if (s.status === 'cancelled') summary.cancelled = Number(s.cnt);
+    if (s.status === 'draft' || s.status === 'in_progress') summary.openTotal += Number(s.sum_amount);
+  }
+
+  const companies = await loadCompanies(c.env.DB, f.company);
   return c.html(
     page({
       title: 'Đề nghị Thanh toán',
       user,
       wide: true,
-      body: listBody(rows, { scope, st, q }),
+      body: listBody(rows, f, summary, companies),
     }),
   );
 });
 
-function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }) {
+// Xuất CSV theo đúng bộ lọc hiện tại (feature 11).
+paymentRoutes.get('/export.csv', async (c) => {
+  const user = c.get('user')!;
+  const f = readPrFilter(c);
+  const { where, params } = buildPrWhere(user.email, f);
+  const rows =
+    (
+      await c.env.DB.prepare(
+        `SELECT code, status, current_stage, creator_name, payee_name, purpose, total_amount,
+                from_company, due_date, created_at
+           FROM payment_request ${where} ORDER BY id DESC`,
+      )
+        .bind(...params)
+        .all<Record<string, unknown>>()
+    ).results ?? [];
+  const cell = (v: unknown) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = ['Mã phiếu', 'Trạng thái', 'Chặng', 'Người tạo', 'Người nhận', 'Mục đích', 'Số tiền', 'Đi từ công ty', 'Ngày cần TT', 'Ngày tạo'];
+  const lines = [head.map(cell).join(',')];
+  for (const r of rows) {
+    lines.push(
+      [
+        r.code,
+        r.status,
+        r.current_stage,
+        r.creator_name,
+        r.payee_name,
+        r.purpose,
+        r.total_amount,
+        r.from_company,
+        r.due_date,
+        String(r.created_at ?? '').slice(0, 10),
+      ]
+        .map(cell)
+        .join(','),
+    );
+  }
+  const csv = '﻿' + lines.join('\r\n'); // BOM để Excel đọc UTF-8 tiếng Việt
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="denghi-thanhtoan.csv"`,
+    },
+  });
+});
+
+function listBody(rows: PrListRow[], f: PrFilter, summary: PrSummary, companies: string[] = []) {
   const qs = (patch: Record<string, string>) => {
     const u = new URLSearchParams();
-    const merged = { scope: f.scope, st: f.st, q: f.q, ...patch };
+    const merged = { scope: f.scope, st: f.st, q: f.q, from: f.from, to: f.to, company: f.company, ...patch };
     if (merged.scope && merged.scope !== 'all') u.set('scope', merged.scope);
     if (merged.st && merged.st !== 'open') u.set('st', merged.st);
     if (merged.q) u.set('q', merged.q);
+    if (merged.from) u.set('from', merged.from);
+    if (merged.to) u.set('to', merged.to);
+    if (merged.company) u.set('company', merged.company);
     const s = u.toString();
     return s ? `/payments?${s}` : '/payments';
   };
@@ -284,10 +447,21 @@ function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }
     html`<a href="${qs({ [key]: val })}"
       class="px-3 py-1.5 rounded-md text-sm ${f[key] === val ? activeCls : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}">${label}</a>`;
 
+  const tile = (label: string, value: string, cls: string) =>
+    html`<div class="bg-white rounded-lg ring-1 ring-slate-200 px-4 py-3">
+      <div class="text-2xl font-bold ${cls}">${value}</div>
+      <div class="text-xs text-slate-500 mt-0.5">${label}</div>
+    </div>`;
   return html`
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-xl font-semibold text-slate-800">💳 Đề nghị Thanh toán — Theo dõi trình ký</h1>
       <a href="/payments/new" class="bg-primary text-primary-foreground hover:opacity-90 text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition">+ Tạo đề nghị</a>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      ${tile('Nháp', String(summary.draft), 'text-slate-700')}
+      ${tile('Đang trình ký', String(summary.in_progress), 'text-amber-600')}
+      ${tile('Đã thanh toán', String(summary.paid), 'text-emerald-700')}
+      ${tile('Tổng tiền đang trình', money(summary.openTotal), 'text-blue-900 text-lg')}
     </div>
     <div class="flex flex-wrap gap-2 mb-3">
       ${tab('scope', 'all', 'Tất cả phiếu', 'bg-blue-900 text-white')}
@@ -302,9 +476,23 @@ function listBody(rows: PrListRow[], f: { scope: string; st: string; q: string }
       <input type="hidden" name="scope" value="${f.scope}" />
       <input type="hidden" name="st" value="${f.st}" />
       <label class="flex flex-col text-xs text-slate-500 gap-1">Tìm (mã / người nhận / mục đích)
-        <input type="text" name="q" value="${f.q}" placeholder="vd KT01 hoặc mực in" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-72" />
+        <input type="text" name="q" value="${f.q}" placeholder="vd KT01 hoặc mực in" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm w-64" />
+      </label>
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Công ty
+        <select name="company" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm bg-white">
+          <option value="">— Tất cả —</option>
+          ${companies.map((cpy) => html`<option value="${esc(cpy)}" ${f.company === cpy ? 'selected' : ''}>${esc(cpy)}</option>`)}
+        </select>
+      </label>
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Từ ngày
+        <input type="date" name="from" value="${f.from}" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm" />
+      </label>
+      <label class="flex flex-col text-xs text-slate-500 gap-1">Đến ngày
+        <input type="date" name="to" value="${f.to}" class="px-2 py-1.5 border border-slate-300 rounded-md text-sm" />
       </label>
       <button class="px-4 py-1.5 bg-blue-900 text-white rounded-md text-sm">Lọc</button>
+      <a href="${qs({}).includes('?') ? qs({}).replace('/payments?', '/payments/export.csv?') : '/payments/export.csv'}"
+        class="px-4 py-1.5 bg-emerald-700 text-white rounded-md text-sm">⬇ Xuất Excel</a>
     </form>
     ${rows.length === 0
       ? html`<div class="text-center text-slate-400 bg-white rounded-lg ring-1 ring-slate-200 py-12">Chưa có đề nghị thanh toán.</div>`
@@ -359,8 +547,8 @@ paymentRoutes.get('/new', async (c) => {
   const user = c.get('user')!;
   if (!user.deptCode)
     throw unprocessable('Tài khoản chưa được gán phòng ban. Liên hệ quản trị hệ thống.', 'no_department');
-  const beneficiaries = await loadBeneficiaries(c.env.DB);
-  return c.html(page({ title: 'Tạo đề nghị thanh toán', user, body: formBody(user, null, beneficiaries) }));
+  const [beneficiaries, companies] = await Promise.all([loadBeneficiaries(c.env.DB), loadCompanies(c.env.DB)]);
+  return c.html(page({ title: 'Tạo đề nghị thanh toán', user, body: formBody(user, null, beneficiaries, companies) }));
 });
 
 paymentRoutes.get('/:id{[0-9]+}/edit', async (c) => {
@@ -381,14 +569,18 @@ paymentRoutes.get('/:id{[0-9]+}/edit', async (c) => {
         .bind(id)
         .all<PrItem>()
     ).results ?? [];
-  const beneficiaries = await loadBeneficiaries(c.env.DB);
-  return c.html(page({ title: `Sửa ${pr.code ?? 'phiếu'}`, user, body: formBody(user, { pr, items }, beneficiaries) }));
+  const [beneficiaries, companies] = await Promise.all([
+    loadBeneficiaries(c.env.DB),
+    loadCompanies(c.env.DB, pr.from_company),
+  ]);
+  return c.html(page({ title: `Sửa ${pr.code ?? 'phiếu'}`, user, body: formBody(user, { pr, items }, beneficiaries, companies) }));
 });
 
 function formBody(
   me: SessionUser,
   existing: { pr: PrRow; items: PrItem[] } | null,
   beneficiaries: Beneficiary[] = [],
+  companies: string[] = [],
 ) {
   const pr = existing?.pr ?? null;
   const action = pr ? `/payments/${pr.id}` : '/payments';
@@ -399,6 +591,8 @@ function formBody(
     no: pr?.bank_account_no ?? '',
     bank: pr?.bank_name ?? '',
     note: pr?.transfer_note ?? '',
+    address: pr?.beneficiary_address ?? '',
+    tax: pr?.beneficiary_tax_code ?? '',
   };
   const benefJson = JSON.stringify(beneficiaries);
   const bankInitJson = JSON.stringify(bankInit);
@@ -532,8 +726,21 @@ function formBody(
           <label class="flex flex-col gap-1 text-sm">Nội dung CK
             <input name="transfer_note" x-model="bank.note" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
-          <label class="flex flex-col gap-1 text-sm md:col-span-2">Đi từ công ty
-            <input name="from_company" value="${v(pr?.from_company)}" class="px-3 py-2 border border-slate-300 rounded-md" />
+          <label class="flex flex-col gap-1 text-sm">Mã số thuế người nhận
+            <input name="beneficiary_tax_code" x-model="bank.tax" inputmode="numeric" class="px-3 py-2 border border-slate-300 rounded-md" />
+          </label>
+          <label class="flex flex-col gap-1 text-sm md:col-span-2">Địa chỉ người nhận
+            <input name="beneficiary_address" x-model="bank.address" class="px-3 py-2 border border-slate-300 rounded-md" />
+          </label>
+          <label class="flex flex-col gap-1 text-sm">Đi từ công ty
+            <input name="from_company" list="pr_companies" value="${v(pr?.from_company)}"
+              placeholder="Chọn hoặc nhập công ty" class="px-3 py-2 border border-slate-300 rounded-md" />
+            <datalist id="pr_companies">
+              ${companies.map((cpy) => html`<option value="${esc(cpy)}"></option>`)}
+            </datalist>
+          </label>
+          <label class="flex flex-col gap-1 text-sm">Ngày cần thanh toán
+            <input type="date" name="due_date" value="${v(pr?.due_date)}" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
         </div>
 
@@ -559,10 +766,13 @@ function formBody(
           },
           benefLabel(b) { return b.account_name + ' · ' + b.account_no + (b.bank_name ? ' · ' + b.bank_name : ''); },
           applyBenef() {
-            if (this.selBenef === '__new__') { this.bank = { name: '', no: '', bank: '', note: '' }; return; }
+            if (this.selBenef === '__new__') { this.bank = { name: '', no: '', bank: '', note: '', address: '', tax: '' }; return; }
             if (this.selBenef === '') return;
             var b = this.beneficiaries.find((x) => String(x.id) === String(this.selBenef));
-            if (b) { this.bank.name = b.account_name || ''; this.bank.no = b.account_no || ''; this.bank.bank = b.bank_name || ''; }
+            if (b) {
+              this.bank.name = b.account_name || ''; this.bank.no = b.account_no || ''; this.bank.bank = b.bank_name || '';
+              this.bank.address = b.address || ''; this.bank.tax = b.tax_code || '';
+            }
           },
           addRow() { this.items.push({ description: '', unit_price: '', qty: '', currency: 'VND', note: '' }); },
           removeRow(i) { this.items.splice(i, 1); if (!this.items.length) this.addRow(); },
@@ -658,8 +868,9 @@ paymentRoutes.post('/', async (c) => {
     `INSERT INTO payment_request
        (code, status, current_stage, creator_user_id, creator_email, creator_name, dept_code,
         payee_name, payee_title, purpose, total_amount, amount_words,
-        pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note, from_company)
-     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+        pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note, from_company,
+        beneficiary_address, beneficiary_tax_code, due_date)
+     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
      RETURNING id`,
   )
     .bind(
@@ -680,6 +891,9 @@ paymentRoutes.post('/', async (c) => {
       String(b.bank_name ?? '').trim() || null,
       String(b.transfer_note ?? '').trim() || null,
       String(b.from_company ?? '').trim() || null,
+      String(b.beneficiary_address ?? '').trim() || null,
+      String(b.beneficiary_tax_code ?? '').trim() || null,
+      String(b.due_date ?? '').trim() || null,
     )
     .first<{ id: number }>();
   const id = ins!.id;
@@ -689,6 +903,8 @@ paymentRoutes.post('/', async (c) => {
       account_name: String(b.bank_account_name ?? ''),
       account_no: String(b.bank_account_no ?? ''),
       bank_name: String(b.bank_name ?? ''),
+      address: String(b.beneficiary_address ?? ''),
+      tax_code: String(b.beneficiary_tax_code ?? ''),
       email: user.email,
     });
   await c.env.DB.prepare(
@@ -742,7 +958,8 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
     `UPDATE payment_request SET
        payee_name=?2, payee_title=?3, purpose=?4, total_amount=?5, amount_words=?6,
        pay_form=?7, receive_form=?8, bank_account_name=?9, bank_account_no=?10, bank_name=?11,
-       transfer_note=?12, from_company=?13, updated_at=iso_now()
+       transfer_note=?12, from_company=?13, beneficiary_address=?14, beneficiary_tax_code=?15,
+       due_date=?16, updated_at=iso_now()
      WHERE id=?1`,
   )
     .bind(
@@ -759,6 +976,9 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
       String(b.bank_name ?? '').trim() || null,
       String(b.transfer_note ?? '').trim() || null,
       String(b.from_company ?? '').trim() || null,
+      String(b.beneficiary_address ?? '').trim() || null,
+      String(b.beneficiary_tax_code ?? '').trim() || null,
+      String(b.due_date ?? '').trim() || null,
     )
     .run();
   await c.env.DB.prepare(`DELETE FROM payment_request_item WHERE pr_id = ?1`).bind(id).run();
@@ -768,6 +988,8 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
       account_name: String(b.bank_account_name ?? ''),
       account_no: String(b.bank_account_no ?? ''),
       bank_name: String(b.bank_name ?? ''),
+      address: String(b.beneficiary_address ?? ''),
+      tax_code: String(b.beneficiary_tax_code ?? ''),
       email: user.email,
     });
   return c.redirect(`/payments/${id}`);
@@ -808,6 +1030,25 @@ paymentRoutes.get('/:id{[0-9]+}', async (c) => {
         .all<{ role: string; email: string; name: string | null; signed_at: string | null }>()
     ).results ?? [];
 
+  const attachments =
+    (
+      await c.env.DB.prepare(
+        `SELECT id, filename, mime, size, uploaded_by_name, created_at
+           FROM payment_request_attachment WHERE pr_id = ?1 ORDER BY id ASC`,
+      )
+        .bind(id)
+        .all<AttachmentRow>()
+    ).results ?? [];
+  const comments =
+    (
+      await c.env.DB.prepare(
+        `SELECT author_email, author_name, body, created_at
+           FROM payment_request_comment WHERE pr_id = ?1 ORDER BY id ASC`,
+      )
+        .bind(id)
+        .all<CommentRow>()
+    ).results ?? [];
+
   // Prefill 4 người ký cho form "Gửi ký điện tử" (best-effort — không chặn nếu thiếu cấu hình).
   let prefill: SignPrefill | null = null;
   if (pr.status === 'draft' && eSignAvailable(c.env)) {
@@ -826,10 +1067,25 @@ paymentRoutes.get('/:id{[0-9]+}', async (c) => {
     prefill = { manager, ksnb, bod };
   }
 
-  return c.html(page({ title: pr.code ?? 'Đề nghị TT', user, body: detailBody(user, pr, items, log, signers, prefill, eSignAvailable(c.env)) }));
+  return c.html(
+    page({
+      title: pr.code ?? 'Đề nghị TT',
+      user,
+      body: detailBody(user, pr, items, log, signers, prefill, eSignAvailable(c.env), attachments, comments),
+    }),
+  );
 });
 
 type SignPrefill = { manager: Approver | null; ksnb: Approver | null; bod: Approver | null };
+type AttachmentRow = {
+  id: number;
+  filename: string;
+  mime: string;
+  size: number;
+  uploaded_by_name: string | null;
+  created_at: string;
+};
+type CommentRow = { author_email: string; author_name: string | null; body: string; created_at: string };
 
 // Card "Gửi ký điện tử" — 4 người ký prefill (sửa được), Kế toán nhập tay.
 function sendSignCard(pr: PrRow, prefill: SignPrefill | null) {
@@ -869,6 +1125,8 @@ function detailBody(
   signers: Array<{ role: string; email: string; name: string | null; signed_at: string | null }> = [],
   prefill: SignPrefill | null = null,
   eSign = false,
+  attachments: AttachmentRow[] = [],
+  comments: CommentRow[] = [],
 ) {
   const stage = Number(pr.current_stage);
   const stages = prStages(pr.mid_order);
@@ -889,9 +1147,11 @@ function detailBody(
     create: 'Tạo phiếu',
     advance: 'Chuyển chặng',
     revert: 'Lùi chặng',
+    reject: 'Từ chối / trả về',
     note: 'Ghi chú',
     cancel: 'Huỷ phiếu',
   };
+  const fmtSize = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
 
   return html`
     <div class="max-w-4xl mx-auto space-y-5">
@@ -901,6 +1161,9 @@ function detailBody(
           ${pr.status === 'draft' && isCreator && !hasEnvelope
             ? html`<a href="/payments/${String(pr.id)}/edit" class="px-3 py-1.5 text-sm ring-1 ring-slate-300 rounded-md hover:bg-slate-50">✎ Sửa</a>`
             : ''}
+          <form method="post" action="/payments/${String(pr.id)}/copy" class="inline">
+            <button class="px-3 py-1.5 text-sm ring-1 ring-slate-300 rounded-md hover:bg-slate-50">⧉ Sao chép</button>
+          </form>
           ${pr.signed_pdf_key
             ? html`<a href="/payments/${String(pr.id)}/signed.pdf" target="_blank" class="px-3 py-1.5 text-sm bg-emerald-700 text-white rounded-md hover:bg-emerald-800">⬇ PDF đã ký</a>`
             : ''}
@@ -969,7 +1232,10 @@ function detailBody(
           <div><span class="text-slate-500">Số TK:</span> ${esc(pr.bank_account_no ?? '')}</div>
           <div><span class="text-slate-500">Ngân hàng:</span> ${esc(pr.bank_name ?? '')}</div>
           <div><span class="text-slate-500">Nội dung CK:</span> ${esc(pr.transfer_note ?? '')}</div>
+          <div><span class="text-slate-500">MST người nhận:</span> ${esc(pr.beneficiary_tax_code ?? '')}</div>
+          <div class="md:col-span-2"><span class="text-slate-500">Địa chỉ người nhận:</span> ${esc(pr.beneficiary_address ?? '')}</div>
           <div><span class="text-slate-500">Đi từ công ty:</span> ${esc(pr.from_company ?? '')}</div>
+          <div><span class="text-slate-500">Ngày cần TT:</span> ${pr.due_date ? esc(pr.due_date) : '—'}</div>
         </div>
       </div>
 
@@ -1039,6 +1305,13 @@ function detailBody(
                       <button class="px-3 py-1.5 text-sm text-amber-700 ring-1 ring-amber-200 rounded-md hover:bg-amber-50">↶ Lùi chặng</button>
                     </form>`
                   : ''}
+                ${stage > 0
+                  ? html`<form method="post" action="/payments/${String(pr.id)}/reject" class="flex gap-2 items-center"
+                      onsubmit="return confirm('Từ chối và trả phiếu về người lập?')">
+                      <input name="reason" placeholder="Lý do từ chối" class="px-2 py-1.5 border border-rose-200 rounded-md text-sm w-56" required />
+                      <button class="px-3 py-1.5 text-sm text-rose-700 ring-1 ring-rose-300 rounded-md hover:bg-rose-50">⊘ Từ chối / trả về</button>
+                    </form>`
+                  : ''}
                 ${isCreator
                   ? html`<form method="post" action="/payments/${String(pr.id)}/cancel" onsubmit="return confirm('Huỷ phiếu này?')">
                       <button class="px-3 py-1.5 text-sm text-rose-600 ring-1 ring-rose-200 rounded-md hover:bg-rose-50">Huỷ phiếu</button>
@@ -1046,6 +1319,70 @@ function detailBody(
                   : ''}
               </div>
             </div>`}
+
+      <!-- Hồ sơ đính kèm (feature 5) -->
+      <div class="bg-white rounded-xl ring-1 ring-slate-200 p-5">
+        <div class="text-sm font-semibold text-slate-700 mb-3">📎 Hồ sơ đính kèm</div>
+        ${attachments.length
+          ? html`<ul class="divide-y divide-slate-100 mb-3">
+              ${attachments.map(
+                (a) => html`<li class="flex items-center justify-between py-2 text-sm">
+                  <a href="/payments/${String(pr.id)}/attachment/${String(a.id)}/download"
+                    class="text-blue-700 hover:underline break-all">${esc(a.filename)}</a>
+                  <span class="flex items-center gap-3 whitespace-nowrap">
+                    <span class="text-xs text-slate-400">${fmtSize(Number(a.size))} · ${esc(a.uploaded_by_name ?? '')} · ${vnDisplay(a.created_at)}</span>
+                    ${!cancelled
+                      ? html`<button type="button" data-att="${String(a.id)}"
+                          onclick="delAtt(${String(pr.id)}, ${String(a.id)})"
+                          class="text-rose-500 hover:text-rose-700 text-xs">✕ Xoá</button>`
+                      : ''}
+                  </span>
+                </li>`,
+              )}
+            </ul>`
+          : html`<p class="text-sm text-slate-400 mb-3">Chưa có hồ sơ nào.</p>`}
+        ${!cancelled
+          ? html`<form method="post" action="/payments/${String(pr.id)}/attachment" enctype="multipart/form-data"
+              class="flex flex-wrap items-center gap-2">
+              <input type="file" name="file" required
+                class="text-sm file:mr-2 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-slate-800 file:text-white file:text-sm" />
+              <button class="px-3 py-1.5 text-sm bg-slate-800 text-white rounded-md hover:bg-slate-700">Tải lên</button>
+              <span class="text-xs text-slate-400">PDF/ảnh/Word/Excel · tối đa 10MB</span>
+            </form>`
+          : ''}
+      </div>
+
+      <!-- Bình luận trao đổi (feature 12) -->
+      <div class="bg-white rounded-xl ring-1 ring-slate-200 p-5">
+        <div class="text-sm font-semibold text-slate-700 mb-3">💬 Trao đổi</div>
+        ${comments.length
+          ? html`<ul class="space-y-3 mb-3">
+              ${comments.map(
+                (m) => html`<li class="text-sm">
+                  <div class="flex items-baseline gap-2">
+                    <span class="font-medium text-slate-700">${esc(m.author_name ?? m.author_email)}</span>
+                    <span class="text-xs text-slate-400">${vnDisplay(m.created_at)}</span>
+                  </div>
+                  <div class="text-slate-600 whitespace-pre-wrap break-words">${esc(m.body)}</div>
+                </li>`,
+              )}
+            </ul>`
+          : html`<p class="text-sm text-slate-400 mb-3">Chưa có trao đổi nào.</p>`}
+        ${!cancelled
+          ? html`<form method="post" action="/payments/${String(pr.id)}/comment" class="flex gap-2 items-start">
+              <textarea name="body" rows="2" required placeholder="Viết trao đổi…"
+                class="flex-1 px-3 py-2 border border-slate-300 rounded-md text-sm"></textarea>
+              <button class="px-4 py-2 bg-blue-900 hover:bg-blue-800 text-white rounded-md text-sm font-semibold">Gửi</button>
+            </form>`
+          : ''}
+      </div>
+      <script>
+        function delAtt(prId, attId) {
+          if (!confirm('Xoá hồ sơ này?')) return;
+          fetch('/payments/' + prId + '/attachment/' + attId, { method: 'DELETE' })
+            .then(function (r) { if (r.ok) location.reload(); else alert('Xoá thất bại'); });
+        }
+      </script>
 
       <!-- Lịch sử trình ký -->
       <div class="bg-white rounded-xl ring-1 ring-slate-200 p-5">
@@ -1067,9 +1404,19 @@ function detailBody(
 
 // ============================ CHUYỂN / LÙI / GHI CHÚ / HUỶ ============================
 async function loadForAction(c: Context<AppEnv>, id: number) {
-  const pr = await c.env.DB.prepare(`SELECT id, status, current_stage, mid_order, creator_email FROM payment_request WHERE id = ?1`)
+  const pr = await c.env.DB.prepare(
+    `SELECT id, status, current_stage, mid_order, creator_email, documenso_envelope_id
+       FROM payment_request WHERE id = ?1`,
+  )
     .bind(id)
-    .first<{ id: number; status: string; current_stage: number; mid_order: string | null; creator_email: string }>();
+    .first<{
+      id: number;
+      status: string;
+      current_stage: number;
+      mid_order: string | null;
+      creator_email: string;
+      documenso_envelope_id: string | null;
+    }>();
   if (!pr) throw notFound('Phiếu không tồn tại');
   if (pr.status === 'cancelled') throw unprocessable('Phiếu đã huỷ.');
   return pr;
@@ -1175,6 +1522,228 @@ paymentRoutes.post('/:id{[0-9]+}/cancel', async (c) => {
     .bind(id, pr.current_stage, prStages(pr.mid_order)[pr.current_stage], user.email, user.name)
     .run();
   return c.redirect(`/payments/${id}`);
+});
+
+// Feature 6: TỪ CHỐI / trả về — lùi hẳn phiếu về chặng Nhập (draft) kèm lý do bắt buộc.
+paymentRoutes.post('/:id{[0-9]+}/reject', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  const pr = await loadForAction(c, id);
+  if (pr.documenso_envelope_id) throw unprocessable('Phiếu đang ký điện tử — huỷ bên Documenso, không dùng trả về thủ công.');
+  if (pr.current_stage <= 0) throw unprocessable('Phiếu đang ở chặng Nhập.');
+  const b = await c.req.parseBody();
+  const reason = String(b.reason ?? '').trim();
+  if (!reason) throw badRequest('Cần nhập lý do từ chối.');
+  await c.env.DB.prepare(
+    `UPDATE payment_request SET current_stage=0, status='draft', mid_order=NULL, updated_at=iso_now() WHERE id=?1`,
+  )
+    .bind(id)
+    .run();
+  await c.env.DB.prepare(
+    `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
+     VALUES (?1,0,?2,'reject',?3,?4,?5)`,
+  )
+    .bind(id, prStages(null)[0], user.email, user.name, `Từ chối/trả về: ${reason}`)
+    .run();
+  const ctx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'pr_reject',
+    actorEmail: user.email,
+    actorName: user.name,
+    actorUserId: user.id,
+    proposalId: id,
+    action: 'reject',
+    channel: 'web',
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+    sessionRef: ctx.sessionRef,
+    detail: JSON.stringify({ doc: 'payment_request', from: pr.current_stage, reason }),
+  });
+  return c.redirect(`/payments/${id}`);
+});
+
+// Feature 6: SAO CHÉP phiếu → phiếu nháp mới thuộc người bấm (tiết kiệm nhập lại phiếu định kỳ).
+paymentRoutes.post('/:id{[0-9]+}/copy', async (c) => {
+  const user = c.get('user')!;
+  if (!user.deptCode) throw unprocessable('Tài khoản chưa được gán phòng ban.', 'no_department');
+  const id = Number(c.req.param('id'));
+  const src = await c.env.DB.prepare(`SELECT * FROM payment_request WHERE id = ?1`).bind(id).first<PrRow>();
+  if (!src) throw notFound('Phiếu không tồn tại');
+  const items =
+    (
+      await c.env.DB.prepare(
+        `SELECT seq, description, unit_price, qty, amount, currency, note
+           FROM payment_request_item WHERE pr_id = ?1 ORDER BY seq ASC`,
+      )
+        .bind(id)
+        .all<PrItem>()
+    ).results ?? [];
+  const code = await nextPaymentCode(c.env.DB, user.deptCode);
+  const ins = await c.env.DB.prepare(
+    `INSERT INTO payment_request
+       (code, status, current_stage, creator_user_id, creator_email, creator_name, dept_code,
+        payee_name, payee_title, purpose, total_amount, amount_words,
+        pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note, from_company,
+        beneficiary_address, beneficiary_tax_code, due_date)
+     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL)
+     RETURNING id`,
+  )
+    .bind(
+      code,
+      user.id,
+      user.email,
+      user.name,
+      user.deptCode,
+      user.name, // người thanh toán = người sao chép
+      user.jobTitle ?? null,
+      src.purpose,
+      src.total_amount,
+      src.amount_words,
+      src.pay_form,
+      src.receive_form,
+      src.bank_account_name,
+      src.bank_account_no,
+      src.bank_name,
+      src.transfer_note,
+      src.from_company,
+      src.beneficiary_address,
+      src.beneficiary_tax_code,
+    )
+    .first<{ id: number }>();
+  const newId = ins!.id;
+  await insertItems(
+    c.env.DB,
+    newId,
+    items.map((it) => ({
+      description: it.description ?? '',
+      unit_price: Number(it.unit_price ?? 0),
+      qty: Number(it.qty ?? 0),
+      amount: Number(it.amount ?? 0),
+      currency: it.currency ?? 'VND',
+      note: it.note ?? '',
+    })),
+  );
+  await c.env.DB.prepare(
+    `INSERT INTO payment_request_stage_log (pr_id, stage_index, stage_name, kind, actor_email, actor_name, note)
+     VALUES (?1, 0, ?2, 'create', ?3, ?4, ?5)`,
+  )
+    .bind(newId, prStages(null)[0], user.email, user.name, `Sao chép từ ${src.code ?? `#${id}`}`)
+    .run();
+  return c.redirect(`/payments/${newId}/edit`);
+});
+
+// Feature 12: thêm bình luận trao đổi.
+paymentRoutes.post('/:id{[0-9]+}/comment', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  const pr = await c.env.DB.prepare(`SELECT id, status FROM payment_request WHERE id = ?1`).bind(id).first<{ id: number; status: string }>();
+  if (!pr) throw notFound('Phiếu không tồn tại');
+  const b = await c.req.parseBody();
+  const body = String(b.body ?? '').trim();
+  if (!body) throw badRequest('Nội dung trống');
+  await c.env.DB.prepare(
+    `INSERT INTO payment_request_comment (pr_id, author_email, author_name, body) VALUES (?1,?2,?3,?4)`,
+  )
+    .bind(id, user.email, user.name, body.slice(0, 4000))
+    .run();
+  return c.redirect(`/payments/${id}#trao-doi`);
+});
+
+// Feature 5: đính kèm hồ sơ (multipart `file`). File → FILES; metadata → DB; ghi audit.
+paymentRoutes.post('/:id{[0-9]+}/attachment', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  const pr = await c.env.DB.prepare(`SELECT id, status FROM payment_request WHERE id = ?1`).bind(id).first<{ id: number; status: string }>();
+  if (!pr) throw notFound('Phiếu không tồn tại');
+  if (pr.status === 'cancelled') throw unprocessable('Phiếu đã huỷ.');
+  const form = await c.req.formData();
+  const file = form.get('file') as File | null;
+  if (!file || typeof file === 'string') throw badRequest('Thiếu file');
+  if (!ATTACH_ALLOWED_MIME.has(file.type)) throw badRequest(`Loại file không cho phép: ${file.type || 'không rõ'}`);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength === 0) throw badRequest('File rỗng');
+  if (bytes.byteLength > ATTACH_MAX_BYTES)
+    throw badRequest(`File vượt ${ATTACH_MAX_BYTES / 1024 / 1024}MB (hiện ${Math.round(bytes.byteLength / 1024 / 1024)}MB)`);
+  const filename = (file.name || 'file').slice(0, 255);
+  const stored = await c.env.FILES.put(bytes);
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO payment_request_attachment
+         (pr_id, storage_key, filename, mime, size, sha256, uploaded_by_user_id, uploaded_by_name)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8)`,
+    )
+      .bind(id, stored.key, filename, file.type, stored.size, stored.sha256, user.id, user.name)
+      .run();
+  } catch (e) {
+    await c.env.FILES.delete(stored.key);
+    throw e;
+  }
+  const ctx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'pr_attachment_add',
+    actorEmail: user.email,
+    actorName: user.name,
+    actorUserId: user.id,
+    proposalId: id,
+    action: 'attach',
+    channel: 'web',
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+    sessionRef: ctx.sessionRef,
+    detail: JSON.stringify({ filename, mime: file.type, size: stored.size, sha256: stored.sha256 }),
+  });
+  return c.redirect(`/payments/${id}`);
+});
+
+// Tải hồ sơ đính kèm (mọi user phòng IT trong luồng — đã gate ở middleware).
+paymentRoutes.get('/:id{[0-9]+}/attachment/:attId{[0-9]+}/download', async (c) => {
+  const id = Number(c.req.param('id'));
+  const attId = Number(c.req.param('attId'));
+  const att = await c.env.DB.prepare(
+    `SELECT storage_key, filename, mime FROM payment_request_attachment WHERE id = ?1 AND pr_id = ?2`,
+  )
+    .bind(attId, id)
+    .first<{ storage_key: string; filename: string; mime: string }>();
+  if (!att) throw notFound('Không tìm thấy hồ sơ');
+  const bytes = await c.env.FILES.get(att.storage_key);
+  if (!bytes) throw notFound('File không tồn tại trên lưu trữ');
+  const safeName = att.filename.replace(/[\r\n"\\]/g, '_');
+  return new Response(bytes, {
+    headers: {
+      'Content-Type': att.mime || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${safeName}"`,
+    },
+  });
+});
+
+// Xoá hồ sơ đính kèm.
+paymentRoutes.delete('/:id{[0-9]+}/attachment/:attId{[0-9]+}', async (c) => {
+  const user = c.get('user')!;
+  const id = Number(c.req.param('id'));
+  const attId = Number(c.req.param('attId'));
+  const att = await c.env.DB.prepare(
+    `SELECT storage_key, filename, mime, size, sha256 FROM payment_request_attachment WHERE id = ?1 AND pr_id = ?2`,
+  )
+    .bind(attId, id)
+    .first<{ storage_key: string; filename: string; mime: string; size: number; sha256: string }>();
+  if (!att) throw notFound('Không tìm thấy hồ sơ');
+  await c.env.DB.prepare(`DELETE FROM payment_request_attachment WHERE id = ?1 AND pr_id = ?2`).bind(attId, id).run();
+  await c.env.FILES.delete(att.storage_key);
+  const ctx = await webAuditContext(c);
+  await logAudit(c.env, {
+    eventType: 'pr_attachment_delete',
+    actorEmail: user.email,
+    actorName: user.name,
+    actorUserId: user.id,
+    proposalId: id,
+    action: 'delete',
+    channel: 'web',
+    ip: ctx.ip,
+    userAgent: ctx.userAgent,
+    sessionRef: ctx.sessionRef,
+    detail: JSON.stringify({ attId, deleted: { filename: att.filename, mime: att.mime, size: att.size, sha256: att.sha256 } }),
+  });
+  return c.json({ ok: true });
 });
 
 // ============================ GỬI KÝ ĐIỆN TỬ (DOCUMENSO) ============================

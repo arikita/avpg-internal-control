@@ -9,6 +9,15 @@ import { html } from 'hono/html';
 import type { HtmlEscapedString } from 'hono/utils/html';
 import { vnDisplay } from '../lib/time';
 import { AVPG_LOGO_DATA_URL } from '../lib/avpg-logo';
+import { VN_BANKS } from '../lib/vn-banks';
+
+// bank_name lưu dưới dạng tên ngắn (short). Bản in cần TÊN ĐẦY ĐỦ → tra ngược short → full.
+// Dữ liệu cũ / ngoài danh mục (không khớp) giữ nguyên giá trị đang lưu.
+const BANK_FULL_BY_SHORT = new Map(VN_BANKS.map((b) => [b.short, b.full]));
+const bankFullName = (v: unknown): string => {
+  const short = String(v ?? '').trim();
+  return short ? BANK_FULL_BY_SHORT.get(short) ?? short : '';
+};
 
 type Html = HtmlEscapedString | Promise<HtmlEscapedString>;
 type Row = Record<string, unknown>;
@@ -214,7 +223,7 @@ export function paymentPrintPage(
 
       <!-- ===== KHỐI TÀI KHOẢN (vùng mở, ghi tay) ===== -->
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Tên chủ tài khoản: ${s(pr.bank_account_name)}</td></tr>
-      <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Số tài khoản người nhận: ${s(pr.bank_account_no)}${pr.bank_name ? html` — ${s(pr.bank_name)}` : ''}</td></tr>
+      <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Số tài khoản người nhận: ${s(pr.bank_account_no)}${pr.bank_name ? html` — ${bankFullName(pr.bank_name)}` : ''}${pr.bank_branch ? html` – CN: ${s(pr.bank_branch)}` : ''}</td></tr>
       <tr style="height:13mm"><td colspan="11" style="vertical-align:top">Nội dung CK: ${s(pr.transfer_note)}</td></tr>
       <tr style="height:13mm"><td colspan="11" class="bb" style="vertical-align:top">Đi từ công ty: ${s(pr.from_company)}</td></tr>
 

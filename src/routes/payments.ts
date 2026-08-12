@@ -46,6 +46,7 @@ type Beneficiary = {
   account_name: string;
   account_no: string;
   bank_name: string;
+  bank_branch: string;
   address: string;
   tax_code: string;
 };
@@ -54,7 +55,7 @@ type Beneficiary = {
 async function loadBeneficiaries(db: AppEnv['Bindings']['DB']): Promise<Beneficiary[]> {
   const r = await db
     .prepare(
-      `SELECT id, account_name, account_no, bank_name, address, tax_code
+      `SELECT id, account_name, account_no, bank_name, bank_branch, address, tax_code
          FROM payment_beneficiary
         ORDER BY use_count DESC, last_used_at DESC
         LIMIT 200`,
@@ -99,6 +100,7 @@ async function upsertBeneficiary(
     account_name: string | null;
     account_no: string | null;
     bank_name: string | null;
+    bank_branch?: string | null;
     address?: string | null;
     tax_code?: string | null;
     email: string;
@@ -107,22 +109,24 @@ async function upsertBeneficiary(
   const accountName = (data.account_name ?? '').trim();
   const accountNo = (data.account_no ?? '').trim();
   const bankName = (data.bank_name ?? '').trim();
+  const bankBranch = (data.bank_branch ?? '').trim();
   const address = (data.address ?? '').trim();
   const taxCode = (data.tax_code ?? '').trim();
   if (!accountName || !accountNo) return;
-  // Trùng (số TK + ngân hàng): tăng use_count; địa chỉ/MST chỉ ghi đè khi lần này có nhập (giữ dữ liệu cũ).
+  // Trùng (số TK + ngân hàng): tăng use_count; chi nhánh/địa chỉ/MST chỉ ghi đè khi lần này có nhập (giữ dữ liệu cũ).
   await db
     .prepare(
-      `INSERT INTO payment_beneficiary (account_name, account_no, bank_name, address, tax_code, created_by)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      `INSERT INTO payment_beneficiary (account_name, account_no, bank_name, bank_branch, address, tax_code, created_by)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
        ON CONFLICT (account_no, bank_name)
        DO UPDATE SET account_name = EXCLUDED.account_name,
+                     bank_branch = CASE WHEN EXCLUDED.bank_branch <> '' THEN EXCLUDED.bank_branch ELSE payment_beneficiary.bank_branch END,
                      address = CASE WHEN EXCLUDED.address <> '' THEN EXCLUDED.address ELSE payment_beneficiary.address END,
                      tax_code = CASE WHEN EXCLUDED.tax_code <> '' THEN EXCLUDED.tax_code ELSE payment_beneficiary.tax_code END,
                      use_count = payment_beneficiary.use_count + 1,
                      last_used_at = iso_now()`,
     )
-    .bind(accountName, accountNo, bankName, address, taxCode, data.email)
+    .bind(accountName, accountNo, bankName, bankBranch, address, taxCode, data.email)
     .run();
 }
 
@@ -195,6 +199,7 @@ type PrRow = {
   bank_account_name: string | null;
   bank_account_no: string | null;
   bank_name: string | null;
+  bank_branch: string | null;
   transfer_note: string | null;
   beneficiary_address: string | null;
   beneficiary_tax_code: string | null;
@@ -590,6 +595,7 @@ function formBody(
     name: pr?.bank_account_name ?? '',
     no: pr?.bank_account_no ?? '',
     bank: pr?.bank_name ?? '',
+    branch: pr?.bank_branch ?? '',
     note: pr?.transfer_note ?? '',
     address: pr?.beneficiary_address ?? '',
     tax: pr?.beneficiary_tax_code ?? '',
@@ -723,6 +729,9 @@ function formBody(
               ${VN_BANKS.map((b) => html`<option value="${esc(b.short)}">${esc(b.full)}</option>`)}
             </select>
           </label>
+          <label class="flex flex-col gap-1 text-sm">Chi nhánh
+            <input name="bank_branch" x-model="bank.branch" placeholder="VD: CN Sài Gòn" class="px-3 py-2 border border-slate-300 rounded-md" />
+          </label>
           <label class="flex flex-col gap-1 text-sm">Nội dung CK
             <input name="transfer_note" x-model="bank.note" class="px-3 py-2 border border-slate-300 rounded-md" />
           </label>
@@ -766,12 +775,12 @@ function formBody(
           },
           benefLabel(b) { return b.account_name + ' · ' + b.account_no + (b.bank_name ? ' · ' + b.bank_name : ''); },
           applyBenef() {
-            if (this.selBenef === '__new__') { this.bank = { name: '', no: '', bank: '', note: '', address: '', tax: '' }; return; }
+            if (this.selBenef === '__new__') { this.bank = { name: '', no: '', bank: '', branch: '', note: '', address: '', tax: '' }; return; }
             if (this.selBenef === '') return;
             var b = this.beneficiaries.find((x) => String(x.id) === String(this.selBenef));
             if (b) {
               this.bank.name = b.account_name || ''; this.bank.no = b.account_no || ''; this.bank.bank = b.bank_name || '';
-              this.bank.address = b.address || ''; this.bank.tax = b.tax_code || '';
+              this.bank.branch = b.bank_branch || ''; this.bank.address = b.address || ''; this.bank.tax = b.tax_code || '';
             }
           },
           addRow() { this.items.push({ description: '', unit_price: '', qty: '', currency: 'VND', note: '' }); },
@@ -869,8 +878,8 @@ paymentRoutes.post('/', async (c) => {
        (code, status, current_stage, creator_user_id, creator_email, creator_name, dept_code,
         payee_name, payee_title, purpose, total_amount, amount_words,
         pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note, from_company,
-        beneficiary_address, beneficiary_tax_code, due_date)
-     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+        beneficiary_address, beneficiary_tax_code, due_date, bank_branch)
+     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
      RETURNING id`,
   )
     .bind(
@@ -894,6 +903,7 @@ paymentRoutes.post('/', async (c) => {
       String(b.beneficiary_address ?? '').trim() || null,
       String(b.beneficiary_tax_code ?? '').trim() || null,
       String(b.due_date ?? '').trim() || null,
+      String(b.bank_branch ?? '').trim() || null,
     )
     .first<{ id: number }>();
   const id = ins!.id;
@@ -903,6 +913,7 @@ paymentRoutes.post('/', async (c) => {
       account_name: String(b.bank_account_name ?? ''),
       account_no: String(b.bank_account_no ?? ''),
       bank_name: String(b.bank_name ?? ''),
+      bank_branch: String(b.bank_branch ?? ''),
       address: String(b.beneficiary_address ?? ''),
       tax_code: String(b.beneficiary_tax_code ?? ''),
       email: user.email,
@@ -959,7 +970,7 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
        payee_name=?2, payee_title=?3, purpose=?4, total_amount=?5, amount_words=?6,
        pay_form=?7, receive_form=?8, bank_account_name=?9, bank_account_no=?10, bank_name=?11,
        transfer_note=?12, from_company=?13, beneficiary_address=?14, beneficiary_tax_code=?15,
-       due_date=?16, updated_at=iso_now()
+       due_date=?16, bank_branch=?17, updated_at=iso_now()
      WHERE id=?1`,
   )
     .bind(
@@ -979,6 +990,7 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
       String(b.beneficiary_address ?? '').trim() || null,
       String(b.beneficiary_tax_code ?? '').trim() || null,
       String(b.due_date ?? '').trim() || null,
+      String(b.bank_branch ?? '').trim() || null,
     )
     .run();
   await c.env.DB.prepare(`DELETE FROM payment_request_item WHERE pr_id = ?1`).bind(id).run();
@@ -988,6 +1000,7 @@ paymentRoutes.post('/:id{[0-9]+}', async (c) => {
       account_name: String(b.bank_account_name ?? ''),
       account_no: String(b.bank_account_no ?? ''),
       bank_name: String(b.bank_name ?? ''),
+      bank_branch: String(b.bank_branch ?? ''),
       address: String(b.beneficiary_address ?? ''),
       tax_code: String(b.beneficiary_tax_code ?? ''),
       email: user.email,
@@ -1231,6 +1244,7 @@ function detailBody(
           <div><span class="text-slate-500">Chủ TK:</span> ${esc(pr.bank_account_name ?? '')}</div>
           <div><span class="text-slate-500">Số TK:</span> ${esc(pr.bank_account_no ?? '')}</div>
           <div><span class="text-slate-500">Ngân hàng:</span> ${esc(pr.bank_name ?? '')}</div>
+          <div><span class="text-slate-500">Chi nhánh:</span> ${esc(pr.bank_branch ?? '')}</div>
           <div><span class="text-slate-500">Nội dung CK:</span> ${esc(pr.transfer_note ?? '')}</div>
           <div><span class="text-slate-500">MST người nhận:</span> ${esc(pr.beneficiary_tax_code ?? '')}</div>
           <div class="md:col-span-2"><span class="text-slate-500">Địa chỉ người nhận:</span> ${esc(pr.beneficiary_address ?? '')}</div>
@@ -1584,8 +1598,8 @@ paymentRoutes.post('/:id{[0-9]+}/copy', async (c) => {
        (code, status, current_stage, creator_user_id, creator_email, creator_name, dept_code,
         payee_name, payee_title, purpose, total_amount, amount_words,
         pay_form, receive_form, bank_account_name, bank_account_no, bank_name, transfer_note, from_company,
-        beneficiary_address, beneficiary_tax_code, due_date)
-     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL)
+        beneficiary_address, beneficiary_tax_code, due_date, bank_branch)
+     VALUES (?1,'draft',0,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,NULL,?20)
      RETURNING id`,
   )
     .bind(
@@ -1608,6 +1622,7 @@ paymentRoutes.post('/:id{[0-9]+}/copy', async (c) => {
       src.from_company,
       src.beneficiary_address,
       src.beneficiary_tax_code,
+      src.bank_branch,
     )
     .first<{ id: number }>();
   const newId = ins!.id;
